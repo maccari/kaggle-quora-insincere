@@ -173,9 +173,10 @@ def map_to_input_space(data, vocab, max_seq_len):
 
 class LogReg(nn.Module):
 
-    def __init__(self, input_size, num_classes, weights):
+    def __init__(self, input_size, num_classes, weights, trainable_emb=False):
         super(LogReg, self).__init__()
-        self.embed1 = nn.Embedding.from_pretrained(torch.from_numpy(weights))
+        self.embed1 = nn.Embedding.from_pretrained(
+            torch.from_numpy(weights), freeze=not trainable_emb)
         self.linear1 = nn.Linear(input_size, num_classes)
         self.nonlinear1 = F.log_softmax
 
@@ -348,6 +349,7 @@ if __name__ == '__main__':
     MOMENTUM = 0.5
     VOCAB_SIZE = 1E6
     EMBEDDING_MODEL = 'glove.840B.300d/glove.840B.300d.txt'
+    TRAINABLE_EMB = True
     SPACY_MODEL = 'en_core_web_sm'
     NUM_EPOCHS = 200
     PATIENCE = 40
@@ -376,7 +378,8 @@ if __name__ == '__main__':
     train_X = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
     train_y = train_data['target'].values
     model = LogReg(
-        input_size=emb_size, num_classes=num_classes, weights=weights)
+        input_size=emb_size, num_classes=num_classes, weights=weights,
+        trainable_emb=TRAINABLE_EMB)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(
         model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM,

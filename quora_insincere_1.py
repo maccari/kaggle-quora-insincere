@@ -73,8 +73,8 @@ def load_data(data_dir, use_saved=False, shuffle=True):
     return train_data, test_data
 
 
-def load_embeddings(data_dir, model, top_n, vocab_filter=None):
-    """ if vocab is not None, ignore top_n
+def load_embeddings(data_dir, model, top_n=0, vocab_filter=None):
+    """ if vocab_filter is not None, ignore top_n
     """
     logger.info("load embeddings")
     vocab = {}
@@ -83,7 +83,7 @@ def load_embeddings(data_dir, model, top_n, vocab_filter=None):
         for idx, line in enumerate(ifs):
             if idx % 10000 == 0:
                 logger.debug(idx)
-            if not vocab and idx >= top_n:
+            if not vocab_filter and top_n and idx >= top_n:
                 break
             line = line.rstrip('\n').split(' ')
             word, vector = line[0], list(map(float, line[1:]))

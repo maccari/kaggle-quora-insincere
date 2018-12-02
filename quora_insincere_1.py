@@ -377,7 +377,10 @@ def build_vocab(train_data, test_data):
 if __name__ == '__main__':
     SUBMIT = True
     FULL_SIZE_FOR_SUBMIT = False
-    SEED = 42
+    SEED = np.random.randint(1E9)
+    set_seeds(SEED)
+    logger.info(f"SEED: {SEED}")
+    logger.info(f"torch.initial_seed(): {torch.initial_seed()}")
     LOWER = True
     DOWNSAMPLE = 0.  # None, 0 or 1 to ignore
     MAX_IMBALANCE_RATIO = 3.
@@ -394,8 +397,6 @@ if __name__ == '__main__':
     NUM_EPOCHS = 200
     PATIENCE = 40
     MIN_IMPROVEMENT = 1E-3
-    set_seeds(SEED)
-    logger.info(f"torch.initial_seed(): {torch.initial_seed()}")
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"Use device {device}")
     data_dir = get_data_dir()

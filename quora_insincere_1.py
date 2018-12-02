@@ -174,24 +174,35 @@ def map_to_input_space(data, vocab, max_seq_len):
     return X
 
 
-class LogReg(nn.Module):
-    """ Logistic regression classifier
+class FeedForwardNN(nn.Module):
+    """ Feed-forward neural network model
     """
 
-    def __init__(self, input_size, num_classes, weights, trainable_emb=False):
+    def __init__(
+            self, input_size, num_classes, weights, trainable_emb=False,
+            hidden1=None):
         """ weights: weights of pretrained embeddings
+            if hidden1 is None, does not add hidden layer
         """
-        super(LogReg, self).__init__()
+        super().__init__()
         self.embed1 = nn.Embedding.from_pretrained(
             torch.from_numpy(weights), freeze=not trainable_emb)
-        self.linear1 = nn.Linear(input_size, num_classes)
-        self.nonlinear1 = F.log_softmax
+        if hidden1:
+            self.input1 = nn.Linear(input_size, hidden1)
+            self.hidden1 = nn.Linear(hidden1, num_classes)
+        else:
+            self.input1 = nn.Linear(input_size, num_classes)
+            self.hidden1 = None
+        self.activation = F.log_softmax
 
     def forward(self, inputs):
         """ forward pass """
         embed1 = self.embed1(inputs).to(torch.float)
         sum_embed1 = embed1.sum(dim=1)
-        return self.nonlinear1(self.linear1(sum_embed1), dim=1)
+        out = self.activation(self.input1(sum_embed1), dim=1)
+        if self.hidden1:
+            out = self.activation(self.hidden1(out), dim=1)
+        return out
 
     def predict(self, inputs):
         """ predict output class """
@@ -372,6 +383,7 @@ if __name__ == '__main__':
     MAX_IMBALANCE_RATIO = 3.
     MAX_SEQ_LEN = 50
     BATCH_SIZE = 1000
+    HIDDEN_SIZE_1 = 100
     LEARNING_RATE = 2E-4
     WEIGHT_DECAY = 1E-6
     MOMENTUM = 0.5
@@ -403,9 +415,9 @@ if __name__ == '__main__':
     num_classes = len(set(train_data['target']))
     train_X = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
     train_y = train_data['target'].values
-    model = LogReg(
+    model = FeedForwardNN(
         input_size=emb_size, num_classes=num_classes, weights=weights,
-        trainable_emb=TRAINABLE_EMB)
+        trainable_emb=TRAINABLE_EMB, hidden1=HIDDEN_SIZE_1)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(
         model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM,

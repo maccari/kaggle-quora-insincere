@@ -1,5 +1,6 @@
 import unittest
-from quora_insincere_1 import LogReg, train, load_embeddings, get_data_dir
+from quora_insincere_1 import (
+    FeedForwardNN, train, load_embeddings, get_data_dir)
 import numpy as np
 import torch.nn as nn
 import os
@@ -23,7 +24,7 @@ def generate_dummy_dataset(dataset_size, vocab_size, max_seq_len):
     return X_train[p], y_train[p]
 
 
-class TestLogReg(unittest.TestCase):
+class TestFeedForwardNetwork(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -37,17 +38,29 @@ class TestLogReg(unittest.TestCase):
             dataset_size=10000, vocab_size=len(cls.vocab), max_seq_len=50)
         cls.num_classes = len(set(cls.y_train))
 
-    def setUp(self):
-        self.model = LogReg(self.emb_size, self.num_classes, self.weights)
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.SGD(self.model.parameters(), lr=.001)
-
-    def test_overfit_training_data(self):
-        """ Test model can learn"""
+    def _train(self):
         scores = train(
             self.X_train, self.X_train, self.y_train, self.y_train, self.model,
             self.criterion, self.optimizer, num_epochs=50, batch_size=100,
             patience=10, min_improvement=0.01)
+        return scores
+
+    def test_logreg_overfit_training_data(self):
+        """ Test logreg can learn """
+        self.model = FeedForwardNN(
+            self.emb_size, self.num_classes, self.weights)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=.001)
+        scores = self._train()
+        self.assertTrue(max(scores, default=0.) > .8)
+
+    def test_mlp_overfit_training_data(self):
+        """ Test mlp can learn """
+        self.model = FeedForwardNN(
+            self.emb_size, self.num_classes, self.weights, hidden1=100)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=.001)
+        scores = self._train()
         self.assertTrue(max(scores, default=0.) > .8)
 
 

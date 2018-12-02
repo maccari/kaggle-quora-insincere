@@ -220,6 +220,57 @@ def batchify(l, batch_size):
         yield l[offset:offset+batch_size]
 
 
+def generate_random_params(params_space, num_samples):
+    """ yield a generator of parameters """
+    for _ in range(num_samples):
+        params = {}
+        for param, values in params_space.items():
+            params[param] = np.random.choice(values).item()
+        yield params
+
+
+def _dict2sortedtuple(d):
+    return tuple(sorted(d.items()))
+
+
+def run_random_search(
+        X, y, weights, params_space, params_score, num_samples,
+        train_ratio=0.8, num_folds=None):
+    """ perform random search
+        if num_folds is not None, train_ratio is ignored
+    """
+    param_samples = generate_random_params(params_space, num_samples)
+    for params in param_samples:
+        tuple_params = _dict2sortedtuple(params)
+        if tuple_params in params_score:
+            continue
+        logger.info(f"drawn params: {params}")
+        model = eval(params['model'])(
+            input_size=weights.shape[1], num_classes=len(set(y)),
+            weights=weights, trainable_emb=params['trainable_emb'],
+            hidden1=params['hidden_size_1'])
+        criterion = eval(params['criterion'])()
+        optimizer = eval(params['optimizer'])(
+            model.parameters(), lr=params['learning_rate'],
+            momentum=params['momentum'], weight_decay=params['weight_decay'])
+        if num_folds:
+            scores = train_cv(
+                X, y, model, criterion, optimizer, params['num_epochs'],
+                params['batch_size'])
+        else:
+            sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio)
+            train_index, test_index = next(sss.split(X, y))
+            X_train, X_test = X[train_index], X[test_index]
+            y_train, y_test = y[train_index], y[test_index]
+            scores = train(
+                X_train, X_test, y_train, y_test, model, criterion, optimizer,
+                num_epochs=params['num_epochs'],
+                batch_size=params['batch_size'],
+                patience=params['patience'],
+                min_improvement=params['min_improvement'])
+        params_score[tuple_params] = scores
+
+
 def train_cv(
         X, y, model, criterion, optimizer, num_epochs, batch_size,
         num_folds=5, metric='f1_score', patience=10, min_improvement=0.):
@@ -397,6 +448,22 @@ if __name__ == '__main__':
     NUM_EPOCHS = 200
     PATIENCE = 40
     MIN_IMPROVEMENT = 1E-3
+    NUM_FOLDS = 5
+    CLF_PARAMS_SPACE = {
+        'model': ['FeedForwardNN'],
+        'batch_size': [2**i for i in range(8, 12)],
+        'hidden_size_1': list(range(0, 201, 50)),
+        'learning_rate': [i*1E-4 for i in [1, 2, 5, 10]],
+        'weight_decay': [10**i for i in range(-6, -4)],
+        'momentum': np.arange(0., 0.91, 0.1),
+        'num_epochs': [200],
+        'patience': [10],
+        'min_improvement': [1E-2],
+        'criterion': ["nn.CrossEntropyLoss"],
+        'optimizer': ["optim.SGD"],
+        'trainable_emb': [True],
+    }
+    NUM_SAMPLES = 50
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"Use device {device}")
     data_dir = get_data_dir()
@@ -424,6 +491,10 @@ if __name__ == '__main__':
         model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM,
         weight_decay=WEIGHT_DECAY)
     if not SUBMIT:
+        params_score = {}
+        run_random_search(
+            train_X, train_y, weights, CLF_PARAMS_SPACE, params_score,
+            num_samples=NUM_SAMPLES)
         cv_scores = train_cv(
             train_X, train_y, model, criterion, optimizer, NUM_EPOCHS,
             BATCH_SIZE, patience=PATIENCE, min_improvement=MIN_IMPROVEMENT)

@@ -12,8 +12,6 @@ import torch.optim as optim
 from functools import partial
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import f1_score
-from itertools import zip_longest
-
 import random
 
 logging.basicConfig(
@@ -25,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def set_seeds(seed):
+    """ set seed for numpy and pytorch """
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -35,6 +34,9 @@ def set_seeds(seed):
 
 
 def _get_candidate_dirs():
+    """ if file candidate_directories.csv exists, read each line as a path
+        return the set of paths read
+    """
     candidate_dirs = set(['.', '../input'])
     if 'candidate_directories.csv' in os.listdir('.'):
         df = pd.read_csv('candidate_directories.csv', names=['directory'])
@@ -43,6 +45,9 @@ def _get_candidate_dirs():
 
 
 def get_data_dir():
+    """ helper to find directory containing input directory depending
+        on machine being used
+    """
     candidate_dirs = _get_candidate_dirs()
     data_files = set(['train.csv', 'test.csv'])
     for candidate_dir in candidate_dirs:
@@ -57,6 +62,7 @@ def get_data_dir():
 
 
 def get_log_dir():
+    """ return log dir, create it if does not exist """
     log_dir = './logs/'
     if not os.path.exists(log_dir):
         os.mkdir(log_dir)
@@ -64,6 +70,7 @@ def get_log_dir():
 
 
 def load_data(data_dir, use_saved=False, shuffle=True):
+    """ load training dataset and test dataset """
     saved_files = set(['train.pkl', 'test.pkl'])
     if use_saved and saved_files < set(os.listdir(data_dir)):
         train_data = pd.read_pickle(os.path.join(data_dir, 'train.pkl'))
@@ -79,7 +86,9 @@ def load_data(data_dir, use_saved=False, shuffle=True):
 
 
 def load_embeddings(data_dir, model, top_n=0, vocab_filter=None):
-    """ if vocab_filter is not None, ignore top_n
+    """ load embedding model in memory
+        if top_n > 0, load the first top_n embeddings in file
+        if vocab_filter is not None, ignore top_n
     """
     logger.info("load embeddings")
     vocab = {}
@@ -110,6 +119,8 @@ def get_top_terms(data):
 
 
 def preprocess_data(data, tokenizer, lower=False):
+    """ preprocess dataset: tokenize text, optionally lowercase
+    """
     logger.info(f"preprocess data (lower={lower})")
     tokenize = partial(_tokenize, tokenizer=tokenizer, lower=lower)
     tokenized = []
@@ -121,7 +132,7 @@ def preprocess_data(data, tokenizer, lower=False):
 
 
 def _tokenize(string, tokenizer, lower=False):
-    """ tokenize """
+    """ tokenize, optionally lowercase """
     tokenized = tokenizer(string)
     tokens = [token.text for token in tokenized]
     if lower:
@@ -141,6 +152,7 @@ def run_eda(train_data, test_data):
 
 
 def save_data(data_dir, train_data, test_data):
+    """ if not saved, save training data and test_data as pickle """
     saved_files = set(['train.pkl', 'test.pkl'])
     if not saved_files < set(os.listdir(data_dir)):
         train_data.to_pickle(os.path.join(data_dir, 'train.pkl'))
@@ -148,27 +160,13 @@ def save_data(data_dir, train_data, test_data):
         logger.info("data saved")
 
 
-def embed_data(data, embeddings):
-    embedded = []
-    for index, row in data.iterrows():
-        if index % 10000 == 0:
-            logger.debug(index)
-        embedding = _embed(data['tokenized'], embeddings)
-        embedded.append(embedding)
-    data['embeddings'] = embedded
-
-
-def _embed(tokens, embeddings):
-    raise Exception()
-
-
 def map_to_input_space(data, vocab, max_seq_len):
+    """ map token to token idx """
     logger.info("map to input space")
     X = np.zeros((len(data), max_seq_len), dtype=int)
     for index, row in data.iterrows():
         if index % 100000 == 0:
             logger.debug(index)
-        # TODO: better handle OOV
         for ti, token in enumerate(row['tokenized']):
             if ti >= max_seq_len:
                 break
@@ -177,8 +175,12 @@ def map_to_input_space(data, vocab, max_seq_len):
 
 
 class LogReg(nn.Module):
+    """ Logistic regression classifier
+    """
 
     def __init__(self, input_size, num_classes, weights, trainable_emb=False):
+        """ weights: weights of pretrained embeddings
+        """
         super(LogReg, self).__init__()
         self.embed1 = nn.Embedding.from_pretrained(
             torch.from_numpy(weights), freeze=not trainable_emb)
@@ -186,31 +188,33 @@ class LogReg(nn.Module):
         self.nonlinear1 = F.log_softmax
 
     def forward(self, inputs):
+        """ forward pass """
         embed1 = self.embed1(inputs).to(torch.float)
         sum_embed1 = embed1.sum(dim=1)
         return self.nonlinear1(self.linear1(sum_embed1), dim=1)
 
     def predict(self, inputs):
+        """ predict output class """
         _, predictions = torch.max(self.predict_proba(inputs), 1)
         return predictions
 
     def predict_proba(self, inputs):
+        """ predict probability of each output class """
         return self.forward(inputs)
 
 
 def batchify(l, batch_size):
+    """ return generator of batches of batch_size """
     for offset in range(0, len(l), batch_size):
         yield l[offset:offset+batch_size]
-
-
-def grouper(iterable, n, fillvalue=None):
-    args = [iter(iterable)] * n
-    return zip_longest(*args, fillvalue=fillvalue)
 
 
 def train_cv(
         X, y, model, criterion, optimizer, num_epochs, batch_size,
         num_folds=5, metric='f1_score', patience=10, min_improvement=0.):
+    """ train using cross-validation
+        return score per iteration per fold
+    """
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True)
     cv_scores = []
     for fold_idx, (train_index, test_index) in enumerate(skf.split(X, y)):
@@ -228,6 +232,9 @@ def train(
         X_train, X_test, y_train, y_test, model, criterion, optimizer,
         num_epochs, batch_size, metric='f1_score', patience=10,
         min_improvement=0.):
+    """ train model
+        return score per iteration
+    """
     model_checkpoint_path = 'best_model.pt'
     X_train, X_test = torch.from_numpy(X_train), torch.from_numpy(X_test)
     y_train, y_test = torch.from_numpy(y_train), torch.from_numpy(y_test)
@@ -270,6 +277,7 @@ def train(
 
 
 def evaluate(inputs, targets, model, metric, batch_size=1000):
+    """ compute predictions for inputs and evaluate w.r.t to targets """
     predictions = predict(inputs, model, batch_size)
     if metric == 'f1_score':
         return f1_score(targets, predictions)
@@ -278,6 +286,9 @@ def evaluate(inputs, targets, model, metric, batch_size=1000):
 
 
 def predict(inputs, model, batch_size=1000):
+    """ predict classes given inputs and model, used to process by batch if
+        large number of inputs
+    """
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     predictions = []
     for input_batch in batchify(inputs, batch_size):
@@ -287,6 +298,9 @@ def predict(inputs, model, batch_size=1000):
 
 
 def early_stopping(scores, patience, min_improvement=0.):
+    """ return True if scores did not improvement within the last <patience>
+        iterations, wih a minimun improvement of <min_improvement>
+    """
     if len(scores) <= patience:
         return False
     best_score_outside_patience = max(scores[:-patience])
@@ -296,11 +310,19 @@ def early_stopping(scores, patience, min_improvement=0.):
 
 
 def weight_reset(m):
+    """ reset weights of model, used between runs
+    """
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
         m.reset_parameters()
 
 
 def downsample(data, downsample_ratio=None, max_imbalance_ratio=None):
+    """ downsample data, either keeping the same proportion between classes
+        using <downsample_ratio> or by enforcing a maximum ratio of imbalance
+        with <max_imbalance_ratio>.
+        max_imbalance_ratio=2. means that the most common class cannot have
+        more than twice the number of datapoints than the least common class
+    """
     if max_imbalance_ratio:
         counts_per_class = dict(data.groupby('target')['qid'].count())
         downsampled_dfs = {}
@@ -310,7 +332,6 @@ def downsample(data, downsample_ratio=None, max_imbalance_ratio=None):
                     f"keeping a max ratio of {max_imbalance_ratio} between "
                     f"classes")
         for class_, count in counts_per_class.items():
-            class_df = data.loc[data['target'] == class_]
             downsampled_dfs[class_] = data.loc[data['target'] == class_] \
                 .sample(min(count, min_class_count))
         data = pd.concat(downsampled_dfs.values()).reset_index(drop=True)
@@ -324,13 +345,15 @@ def downsample(data, downsample_ratio=None, max_imbalance_ratio=None):
 
 
 def unison_shuffled_copies(a, b):
+    """ shuffle two numpy array keeping the alignment between them """
     assert len(a) == len(b)
     p = np.random.permutation(len(a))
     return a[p], b[p]
 
 
 def build_vocab(train_data, test_data):
-    """ we also add test_data vocab as they may be useful at inference time
+    """ return set containing all distinct tokens appearing in the data
+        we also add test_data vocab as they may be useful at inference time
     """
     vocab = set()
     for tokenized in train_data['tokenized'].values:
@@ -373,8 +396,6 @@ if __name__ == '__main__':
     preprocess_data(train_data, tokenizer, LOWER)
     preprocess_data(test_data, tokenizer, LOWER)
     vocab_filter = build_vocab(train_data, test_data)
-    # if not DOWNSAMPLE:
-    #     save_data(data_dir, train_data, test_data)
     weights, vocab = load_embeddings(
         embed_dir, model=EMBEDDING_MODEL, top_n=VOCAB_SIZE,
         vocab_filter=vocab_filter)
@@ -389,8 +410,6 @@ if __name__ == '__main__':
     optimizer = optim.SGD(
         model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM,
         weight_decay=WEIGHT_DECAY)
-    # TODO: use Dataloader
-    # TODO: use vocab from train and test set to select embeddings to load
     if not SUBMIT:
         cv_scores = train_cv(
             train_X, train_y, model, criterion, optimizer, NUM_EPOCHS,

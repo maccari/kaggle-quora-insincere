@@ -14,6 +14,7 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import f1_score
 from itertools import zip_longest
 
+import random
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,9 +25,13 @@ logger = logging.getLogger(__name__)
 
 
 def set_seeds(seed):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        os.environ['PYTHONHASHSEED'] = str(seed)
 
 
 def _get_candidate_dirs():

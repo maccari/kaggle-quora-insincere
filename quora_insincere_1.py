@@ -85,10 +85,12 @@ def load_data(data_dir, use_saved=False, shuffle=True):
     return train_data, test_data
 
 
-def load_embeddings(data_dir, model, top_n=0, vocab_filter=None):
+def load_embeddings(
+        data_dir, model, top_n=0, vocab_filter=None, oov_vocab=None):
     """ load embedding model in memory
         if top_n > 0, load the first top_n embeddings in file
         if vocab_filter is not None, ignore top_n
+        if oov_vocab, add tokens in it not in vocab, init using mean weight
     """
     logger.info("load embeddings")
     vocab = {}
@@ -105,6 +107,13 @@ def load_embeddings(data_dir, model, top_n=0, vocab_filter=None):
                 continue
             vocab[word] = len(vocab)
             weights.append(vector)
+    if oov_vocab:
+        oov_to_add = oov_vocab - set(vocab)
+        logger.info(f"Add {len(oov_to_add)} oov tokens")
+        mean_weight = np.mean(weights, axis=0)
+        for token in oov_to_add:
+            vocab[token] = len(vocab)
+            weights.append(mean_weight)
     weights = np.array(weights)
     return weights, vocab
 
@@ -413,14 +422,11 @@ def unison_shuffled_copies(a, b):
     return a[p], b[p]
 
 
-def build_vocab(train_data, test_data):
+def build_vocab(data):
     """ return set containing all distinct tokens appearing in the data
-        we also add test_data vocab as they may be useful at inference time
     """
     vocab = set()
-    for tokenized in train_data['tokenized'].values:
-        vocab.update(tokenized)
-    for tokenized in test_data['tokenized'].values:
+    for tokenized in data['tokenized'].values:
         vocab.update(tokenized)
     return vocab
 
@@ -475,10 +481,11 @@ if __name__ == '__main__':
     tokenizer = Tokenizer(nlp.vocab)
     preprocess_data(train_data, tokenizer, LOWER)
     preprocess_data(test_data, tokenizer, LOWER)
-    vocab_filter = build_vocab(train_data, test_data)
+    train_vocab = build_vocab(train_data)
     weights, vocab = load_embeddings(
         embed_dir, model=EMBEDDING_MODEL, top_n=VOCAB_SIZE,
-        vocab_filter=vocab_filter)
+        vocab_filter=train_vocab, oov_vocab=train_vocab)
+    logger.info(f"Vocab size: {len(vocab)}")
     emb_size = weights.shape[1]
     num_classes = len(set(train_data['target']))
     train_X = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)

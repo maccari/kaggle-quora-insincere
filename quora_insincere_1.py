@@ -278,6 +278,11 @@ def run_random_search(
                 patience=params['patience'],
                 min_improvement=params['min_improvement'])
         params_score[tuple_params] = scores
+        logger.info(f"Max score for params: {max(scores, default=0.)}")
+        best_params = sorted(
+            [(params, scores[-1]) for params, scores in params_score.items()],
+            key=lambda x: x[1], reverse=True)[0]
+        logger.info(f"Best params so far: {best_params}")
 
 
 def train_cv(
@@ -292,10 +297,10 @@ def train_cv(
         logger.info(f"fold index: {fold_idx}")
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y[train_index], y[test_index]
-        score = train(
+        fold_scores = train(
             X_train, X_test, y_train, y_test, model, criterion, optimizer,
             num_epochs, batch_size, metric, patience)
-        cv_scores.append(score)
+        cv_scores.append(fold_scores)
     return cv_scores
 
 
@@ -315,8 +320,8 @@ def train(
     model.train()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
+    logger.info("Start training...")
     for epoch in range(num_epochs):
-        logger.info(f"EPOCH: {epoch}")
         X_train, y_train = unison_shuffled_copies(X_train, y_train)
         for offset in range(0, len(X_train), batch_size):
             inputs = X_train[offset: offset+batch_size].to(device)
@@ -488,8 +493,8 @@ if __name__ == '__main__':
     logger.info(f"Vocab size: {len(vocab)}")
     emb_size = weights.shape[1]
     num_classes = len(set(train_data['target']))
-    train_X = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
-    train_y = train_data['target'].values
+    X_train = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
+    y_train = train_data['target'].values
     model = FeedForwardNN(
         input_size=emb_size, num_classes=num_classes, weights=weights,
         trainable_emb=TRAINABLE_EMB, hidden1=HIDDEN_SIZE_1)
@@ -500,25 +505,25 @@ if __name__ == '__main__':
     if not SUBMIT:
         params_score = {}
         run_random_search(
-            train_X, train_y, weights, CLF_PARAMS_SPACE, params_score,
+            X_train, y_train, weights, CLF_PARAMS_SPACE, params_score,
             num_samples=NUM_SAMPLES)
         cv_scores = train_cv(
-            train_X, train_y, model, criterion, optimizer, NUM_EPOCHS,
+            X_train, y_train, model, criterion, optimizer, NUM_EPOCHS,
             BATCH_SIZE, patience=PATIENCE, min_improvement=MIN_IMPROVEMENT)
         # analysis = run_eda(train_data, test_data)
     else:
         if DOWNSAMPLE and FULL_SIZE_FOR_SUBMIT:  # recompute train data
             train_data, test_data = load_data(data_dir)
             preprocess_data(train_data, tokenizer, LOWER)
-            train_X = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
-            train_y = train_data['target'].values
+            X_train = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
+            y_train = train_data['target'].values
         logger.info("final training")
         scores = train(
-            train_X, train_X, train_y, train_y, model, criterion, optimizer,
+            X_train, X_train, y_train, y_train, model, criterion, optimizer,
             NUM_EPOCHS, BATCH_SIZE, patience=PATIENCE,
             min_improvement=MIN_IMPROVEMENT)
         logger.info("preprocess and predict target on test set")
-        test_X = map_to_input_space(test_data, vocab, MAX_SEQ_LEN)
-        test_X = torch.from_numpy(test_X)
-        test_data['prediction'] = predict(test_X, model)
+        X_test = map_to_input_space(test_data, vocab, MAX_SEQ_LEN)
+        X_test = torch.from_numpy(X_test)
+        test_data['prediction'] = predict(X_test, model)
         test_data[['qid', 'prediction']].to_csv('submission.csv', index=False)

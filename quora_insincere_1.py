@@ -194,8 +194,9 @@ class FeedForwardNN(nn.Module):
             if hidden1 is None, does not add hidden layer
         """
         super().__init__()
-        self.embed1 = nn.Embedding.from_pretrained(
-            torch.from_numpy(weights), freeze=not trainable_emb)
+        self.weights = weights
+        self.trainable_emb = trainable_emb
+        self._init_embeddings()
         if hidden1:
             self.input1 = nn.Linear(input_size, hidden1)
             self.hidden1 = nn.Linear(hidden1, num_classes)
@@ -203,6 +204,10 @@ class FeedForwardNN(nn.Module):
             self.input1 = nn.Linear(input_size, num_classes)
             self.hidden1 = None
         self.activation = F.log_softmax
+
+    def _init_embeddings(self):
+        self.embed1 = nn.Embedding.from_pretrained(
+            torch.from_numpy(self.weights), freeze=not self.trainable_emb)
 
     def forward(self, inputs):
         """ forward pass """
@@ -221,6 +226,12 @@ class FeedForwardNN(nn.Module):
     def predict_proba(self, inputs):
         """ predict probability of each output class """
         return self.forward(inputs)
+
+    def reset_weights(self):
+        """ reset model weights """
+        self._init_embeddings()
+        self.apply(weight_reset)
+
 
 
 def batchify(l, batch_size):
@@ -316,7 +327,7 @@ def train(
     y_train, y_test = torch.from_numpy(y_train), torch.from_numpy(y_test)
     scores = []
     iter = 0
-    model.apply(weight_reset)
+    model.reset_weights()
     model.train()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)

@@ -86,15 +86,19 @@ def load_data(data_dir, use_saved=False, shuffle=True):
 
 
 def load_embeddings(
-        data_dir, model, top_n=0, vocab_filter=None, oov_vocab=None):
+        data_dir, model, top_n=0, vocab_filter=None, oov_vocab=None,
+        padding_token='_PAD_', oov_token='_OOV_'):
     """ load embedding model in memory
         if top_n > 0, load the first top_n embeddings in file
         if vocab_filter is not None, ignore top_n
-        if oov_vocab, add tokens in it not in vocab, init using mean weight
+        if oov_vocab, add tokens in it that is not in vocab, init them using
+            mean weight
+        padding_token has idx 0
+        oov_token has idx 1
     """
     logger.info("load embeddings")
-    vocab = {}
-    weights = []
+    vocab = {padding_token: 0, oov_token: 1}
+    weights = [None, None]
     with open(os.path.join(data_dir, model)) as ifs:
         for idx, line in enumerate(ifs):
             if idx % 10000 == 0:
@@ -107,10 +111,16 @@ def load_embeddings(
                 continue
             vocab[word] = len(vocab)
             weights.append(vector)
+    if len(weights) <= 2:
+        raise ValueError("No weight loaded")
+    emb_size = len(weights[2])
+    weights[vocab[padding_token]] = [0.] * emb_size
+    weights[vocab[oov_token]] = [0.] * emb_size
+    mean_weight = np.mean(weights, axis=0)
+    weights[vocab[oov_token]] = mean_weight
     if oov_vocab:
         oov_to_add = oov_vocab - set(vocab)
         logger.info(f"Add {len(oov_to_add)} oov tokens")
-        mean_weight = np.mean(weights, axis=0)
         for token in oov_to_add:
             vocab[token] = len(vocab)
             weights.append(mean_weight)
@@ -169,17 +179,19 @@ def save_data(data_dir, train_data, test_data):
         logger.info("data saved")
 
 
-def map_to_input_space(data, vocab, max_seq_len):
-    """ map token to token idx """
+def map_to_input_space(
+        data, vocab, max_seq_len, pad_token='_PAD_', oov_token='_OOV_'):
+    """ map token to token idx
+    """
     logger.info("map to input space")
-    X = np.zeros((len(data), max_seq_len), dtype=int)
+    X = np.full((len(data), max_seq_len), vocab[pad_token], dtype=int)
     for index, row in data.iterrows():
         if index % 100000 == 0:
             logger.debug(index)
         for ti, token in enumerate(row['tokenized']):
             if ti >= max_seq_len:
                 break
-            X[index][ti] = vocab.get(token, 0)
+            X[index][ti] = vocab.get(token) or vocab[oov_token]
     return X
 
 
@@ -189,13 +201,14 @@ class FeedForwardNN(nn.Module):
 
     def __init__(
             self, input_size, num_classes, weights, trainable_emb=False,
-            hidden1=None):
+            hidden1=None, padding_idx=0):
         """ weights: weights of pretrained embeddings
             if hidden1 is None, does not add hidden layer
         """
         super().__init__()
         self.weights = weights
         self.trainable_emb = trainable_emb
+        self.padding_idx = padding_idx
         self._init_embeddings()
         if hidden1:
             self.input1 = nn.Linear(input_size, hidden1)
@@ -206,8 +219,11 @@ class FeedForwardNN(nn.Module):
         self.activation = F.log_softmax
 
     def _init_embeddings(self):
-        self.embed1 = nn.Embedding.from_pretrained(
-            torch.from_numpy(self.weights), freeze=not self.trainable_emb)
+        num_emb, emb_size = self.weights.shape
+        self.embed1 = nn.Embedding(
+            num_emb, emb_size, self.padding_idx,
+            _weight=torch.from_numpy(self.weights))
+        self.embed1.weight.requires_grad = self.trainable_emb
 
     def forward(self, inputs):
         """ forward pass """

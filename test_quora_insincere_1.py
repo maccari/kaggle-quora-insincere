@@ -7,19 +7,25 @@ import os
 import torch.optim as optim
 
 
-def generate_dummy_dataset(dataset_size, vocab_size, max_seq_len):
-    middle_idx_vocab = int(vocab_size / 2)
+def generate_dummy_dataset(dataset_size, vocab, max_seq_len, padding_idx=0):
+    """ generate a dummy dataset perfectly separable, using first half of the
+        vocab to build samples of the first class and second half for the
+        second class
+    """
+    vocab.discard(padding_idx)
+    vocab = list(vocab)
+    middle_idx_vocab = int(len(vocab) / 2)
+    class_vocab = {0: vocab[:middle_idx_vocab], 1: vocab[middle_idx_vocab:]}
     X_train = np.empty((dataset_size, max_seq_len), dtype=int)
     y_train = np.empty((dataset_size), dtype=int)
     for x_idx in range(dataset_size):
-        if x_idx % 2 == 0:
-            tokens_idx = np.random.choice(
-                np.arange(0, middle_idx_vocab), max_seq_len)
-        else:
-            tokens_idx = np.random.choice(
-                np.arange(middle_idx_vocab, vocab_size), max_seq_len)
+        class_ = x_idx % 2
+        seq_len = np.random.choice(range(1, max_seq_len + 1))
+        tokens_idx = np.full(max_seq_len, padding_idx, dtype=int)
+        seq = np.random.choice(class_vocab[class_], seq_len)
+        tokens_idx[:seq_len] = seq
         X_train[x_idx, :] = tokens_idx
-        y_train[x_idx] = x_idx % 2
+        y_train[x_idx] = class_
     p = np.random.permutation(len(X_train))
     return X_train[p], y_train[p]
 
@@ -35,7 +41,7 @@ class TestFeedForwardNetwork(unittest.TestCase):
             embed_dir, model=model_path, top_n=1000)
         cls.emb_size = cls.weights.shape[1]
         cls.X_train, cls.y_train = generate_dummy_dataset(
-            dataset_size=10000, vocab_size=len(cls.vocab), max_seq_len=50)
+            dataset_size=10000, vocab=set(cls.vocab.values()), max_seq_len=50)
         cls.num_classes = len(set(cls.y_train))
 
     def _train(self):

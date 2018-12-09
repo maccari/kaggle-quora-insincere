@@ -201,14 +201,16 @@ class FeedForwardNN(nn.Module):
 
     def __init__(
             self, input_size, num_classes, weights, trainable_emb=False,
-            hidden1=None, padding_idx=0):
+            hidden1=None, padding_idx=0, emb_agg='mean'):
         """ weights: weights of pretrained embeddings
             if hidden1 is None, does not add hidden layer
+            emb_agg: embedding aggregation method, 'sum' or 'mean'
         """
         super().__init__()
         self.weights = weights
         self.trainable_emb = trainable_emb
         self.padding_idx = padding_idx
+        self.emb_agg = emb_agg
         self._init_embeddings()
         if hidden1:
             self.input1 = nn.Linear(input_size, hidden1)
@@ -225,11 +227,16 @@ class FeedForwardNN(nn.Module):
             _weight=torch.from_numpy(self.weights))
         self.embed1.weight.requires_grad = self.trainable_emb
 
-    def forward(self, inputs):
+    def forward(self, inputs, inputs_lengths=None):
         """ forward pass """
         embed1 = self.embed1(inputs).to(torch.float)
-        sum_embed1 = embed1.sum(dim=1)
-        out = self.activation(self.input1(sum_embed1), dim=1)
+        agg_embed1 = embed1.sum(dim=1)
+        if self.emb_agg == 'mean':
+            if inputs_lengths is None:
+                inputs_lengths = (inputs != self.padding_idx).sum(dim=1)
+            inputs_lengths = inputs_lengths.to(torch.float).view(-1, 1)
+            agg_embed1 /= inputs_lengths
+        out = self.activation(self.input1(agg_embed1), dim=1)
         if self.hidden1:
             out = self.activation(self.hidden1(out), dim=1)
         return out

@@ -9,10 +9,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.autograd import Variable
 from functools import partial
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import f1_score
 import random
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 logging.basicConfig(
     level=logging.INFO,
@@ -255,6 +257,119 @@ class FeedForwardNN(nn.Module):
         self._init_embeddings()
         self.apply(weight_reset)
 
+
+class RecurrentNN(nn.Module):
+    """ Recurrent neural network model
+    """
+
+    def __init__(
+            self, input_size, num_classes, weights, trainable_emb=False,
+            hidden_dim_rnn=50, num_layers_rnn=1, unit_type='LSTM', dropout=0.,
+            padding_idx=0, bidirectional=True, maxpooling=True):
+        """ unit_type: 'LSTM' or 'GRU' """
+        super().__init__()
+        self.input_size = input_size
+        self.weights = weights
+        self.trainable_emb = trainable_emb
+        self.hidden_dim_rnn = hidden_dim_rnn
+        self.num_layers_rnn = num_layers_rnn
+        self.bidirectional = bidirectional
+        self.maxpooling = maxpooling
+        self.unit_type = unit_type
+        self.padding_idx = padding_idx
+        self._init_embeddings()
+        if unit_type == 'LSTM':
+            self.rnn = nn.LSTM(
+                self.input_size, self.hidden_dim_rnn, self.num_layers_rnn,
+                bidirectional=self.bidirectional, batch_first=True,
+                dropout=dropout)
+        elif unit_type == 'GRU':
+            self.rnn = nn.GRU(
+                input_size, self.hidden_dim_rnn, self.num_layers_rnn,
+                bidirectional=self.bidirectional, batch_first=True,
+                dropout=dropout)
+        else:
+            raise ValueError(f"Unknown unit_type {unit_type}")
+        self.linear1 = nn.Linear(
+            self.hidden_dim_rnn * (1+self.bidirectional), num_classes)
+        if self.maxpooling:
+            # as opposed to MaxPool1D, AdaptiveMaxPool1d does not need kernel
+            # size (== max_seq_len batch) which is different for since we have
+            # variable length inputs
+            self.max_pool = nn.AdaptiveMaxPool1d(1)
+        self.activation = F.log_softmax
+
+    def _init_embeddings(self):
+        num_emb, emb_size = self.weights.shape
+        self.embed1 = nn.Embedding(
+            num_emb, emb_size, self.padding_idx,
+            _weight=torch.from_numpy(self.weights))
+        self.embed1.weight.requires_grad = self.trainable_emb
+
+    def forward(self, inputs, inputs_lengths=None):
+        """ forward pass """
+        embed1 = self.embed1(inputs).to(torch.float)
+        if inputs_lengths is None:
+            inputs_lengths = (inputs != self.padding_idx).sum(dim=1)
+        # reset state at beginning of each batch
+        self.hidden_rnn = self._init_hidden(len(embed1))
+        # sort by length for pack_padded_sequence
+        inputs_lengths, sort_idx = inputs_lengths.sort(0, descending=True)
+        embed1 = embed1[sort_idx]
+        # pack sequences to feed to rnn
+        packed_embed1 = pack_padded_sequence(
+            embed1, inputs_lengths, batch_first=True)
+        rnn_out, self.hidden_rnn = self.rnn(packed_embed1, self.hidden_rnn)
+        # unpack sequences out of rnn
+        unpacked_rnn_out, _ = pad_packed_sequence(rnn_out, batch_first=True)
+        # put back in original order (necessary to compare to targets)
+        _, unsort_idx = sort_idx.sort(0)
+        if self.maxpooling:
+            unpacked_rnn_out = unpacked_rnn_out[unsort_idx]
+            out = self.max_pool(unpacked_rnn_out.permute(0, 2, 1)).squeeze(2)
+        else:
+            # get the last timestep of each element
+            # seems to be different than self.hidden[0]
+            # idx = (in_len_batch - 1).view(-1, 1).expand(
+            #   len(in_len_batch), unpacked_rnn_out.shape[2]).unsqueeze(1)
+            # last_step_rnn_out = unpacked_rnn_out.gather(1, idx).squeeze(1)
+            # not as good as for variable length many gradients is zero
+            # last_step_rnn_out = unpacked_rnn_out[:, -1, :]
+            # [batch_size, max_seq_len (of batch), (1+is_bidir)*hidden_dim_rnn]
+            last_step_rnn_out = torch.cat(tuple(self.hidden_rnn[0]), dim=1)
+            out = last_step_rnn_out[unsort_idx]
+        out = self.activation(self.linear1(out), dim=1)
+        return out
+
+    def predict_proba(self, inputs):
+        """ predict probability of each output class """
+        return self.forward(inputs)
+
+    def predict(self, inputs):
+        """ predict output class """
+        _, predictions = torch.max(self.predict_proba(inputs), 1)
+        return predictions
+
+    def _init_hidden(self, batch_size):
+        """ init hidden state
+            if unit_type == 'LSTM', returns (h0, c0) elif 'GRU' returns h0
+        """
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        h0 = Variable(torch.zeros(
+            self.num_layers_rnn * (1 + self.bidirectional), batch_size,
+            self.hidden_dim_rnn))
+        if self.unit_type == 'LSTM':
+            c0 = Variable(torch.zeros(
+                self.num_layers_rnn * (1 + self.bidirectional), batch_size,
+                self.hidden_dim_rnn))
+            return h0.to(device), c0.to(device)
+        elif self.unit_type == 'GRU':
+            return h0.to(device)
+
+    def reset_weights(self):
+        """ reset model weights """
+        self._init_embeddings()
+        self.apply(weight_reset)
 
 
 def batchify(l, batch_size):

@@ -1,6 +1,6 @@
 import unittest
 from quora_insincere_1 import (
-    FeedForwardNN, train, load_embeddings, get_data_dir)
+    FeedForwardNN, RecurrentNN, train, load_embeddings, get_data_dir)
 import numpy as np
 import torch.nn as nn
 import os
@@ -30,7 +30,7 @@ def generate_dummy_dataset(dataset_size, vocab, max_seq_len, padding_idx=0):
     return X_train[p], y_train[p]
 
 
-class TestFeedForwardNetwork(unittest.TestCase):
+class TestModels(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -47,7 +47,7 @@ class TestFeedForwardNetwork(unittest.TestCase):
     def _train(self):
         scores = train(
             self.X_train, self.X_train, self.y_train, self.y_train, self.model,
-            self.criterion, self.optimizer, num_epochs=50, batch_size=100,
+            self.criterion, self.optimizer, num_epochs=20, batch_size=100,
             patience=10, min_improvement=0.01)
         return scores
 
@@ -66,6 +66,25 @@ class TestFeedForwardNetwork(unittest.TestCase):
             self.emb_size, self.num_classes, self.weights, hidden1=100)
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = optim.SGD(self.model.parameters(), lr=.001)
+        scores = self._train()
+        self.assertTrue(max(scores, default=0.) > .8)
+
+    def test_bilstm_overfit_training_data(self):
+        """ Test bilstm can learn """
+        self.model = RecurrentNN(
+            self.emb_size, self.num_classes, self.weights, hidden_dim_rnn=80,
+            maxpooling=False)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=.005)
+        scores = self._train()
+        self.assertTrue(max(scores, default=0.) > .8)
+
+    def test_bilstmmaxpool_overfit_training_data(self):
+        """ Test bilstm with maxpooling can learn """
+        self.model = RecurrentNN(
+            self.emb_size, self.num_classes, self.weights, hidden_dim_rnn=80)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=.005)
         scores = self._train()
         self.assertTrue(max(scores, default=0.) > .8)
 

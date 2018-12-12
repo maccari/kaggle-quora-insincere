@@ -15,6 +15,7 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import f1_score
 import random
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import sys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +23,14 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.StreamHandler(), logging.FileHandler('out.log')])
 logger = logging.getLogger(__name__)
+
+
+def my_handler(type, value, tb):
+    logger.exception("Uncaught exception: {0}".format(str(value)))
+
+
+# Install exception handler
+sys.excepthook = my_handler
 
 
 def set_seeds(seed):

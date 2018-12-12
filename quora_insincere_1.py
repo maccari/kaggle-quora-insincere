@@ -403,35 +403,59 @@ def run_random_search(
         if tuple_params in params_score:
             continue
         logger.info(f"drawn params: {params}")
-        model = eval(params['model'])(
+        scores = train_for_params(
+            X, y, weights, params, train_ratio, num_folds)
+        params_score[tuple_params] = scores
+        logger.info(f"Max score for params: {max(scores, default=0.)}")
+        best_params, score = get_best_params(params_score)
+        logger.info(f"Best params so far {score} using {best_params}")
+
+
+def get_best_params(params_score):
+    """ return (best_params, score) given dictionary of
+        params -> score per iteration
+    """
+    params, score = sorted(
+        [(params, max(scores)) for params, scores in params_score.items()],
+        key=lambda x: x[1], reverse=True)[0]
+    return params, score
+
+
+def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
+    """ train classifier for given parameters
+    """
+    if params['model'] == 'FeedForwardNN':
+        model = FeedForwardNN(
             input_size=weights.shape[1], num_classes=len(set(y)),
             weights=weights, trainable_emb=params['trainable_emb'],
             hidden1=params['hidden_size_1'])
-        criterion = eval(params['criterion'])()
-        optimizer = eval(params['optimizer'])(
-            model.parameters(), lr=params['learning_rate'],
-            momentum=params['momentum'], weight_decay=params['weight_decay'])
-        if num_folds:
-            scores = train_cv(
-                X, y, model, criterion, optimizer, params['num_epochs'],
-                params['batch_size'])
-        else:
-            sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio)
-            train_index, test_index = next(sss.split(X, y))
-            X_train, X_test = X[train_index], X[test_index]
-            y_train, y_test = y[train_index], y[test_index]
-            scores = train(
-                X_train, X_test, y_train, y_test, model, criterion, optimizer,
-                num_epochs=params['num_epochs'],
-                batch_size=params['batch_size'],
-                patience=params['patience'],
-                min_improvement=params['min_improvement'])
-        params_score[tuple_params] = scores
-        logger.info(f"Max score for params: {max(scores, default=0.)}")
-        best_params = sorted(
-            [(params, scores[-1]) for params, scores in params_score.items()],
-            key=lambda x: x[1], reverse=True)[0]
-        logger.info(f"Best params so far: {best_params}")
+    elif params['model'] == 'RecurrentNN':
+        model = RecurrentNN(
+            input_size=weights.shape[1], num_classes=len(set(y)),
+            weights=weights, trainable_emb=params['trainable_emb'],
+            hidden_dim_rnn=params['hidden_dim_rnn'], dropout=params['dropout'])
+    else:
+        raise ValueError(f"Unknown model {params['model']}")
+    criterion = eval(params['criterion'])()
+    optimizer = eval(params['optimizer'])(
+        model.parameters(), lr=params['learning_rate'],
+        momentum=params['momentum'], weight_decay=params['weight_decay'])
+    if num_folds:
+        scores = train_cv(
+            X, y, model, criterion, optimizer, params['num_epochs'],
+            params['batch_size'])
+    else:
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio)
+        train_index, test_index = next(sss.split(X, y))
+        X_train, X_test = X[train_index], X[test_index]
+        y_train, y_test = y[train_index], y[test_index]
+        scores = train(
+            X_train, X_test, y_train, y_test, model, criterion, optimizer,
+            num_epochs=params['num_epochs'],
+            batch_size=params['batch_size'],
+            patience=params['patience'],
+            min_improvement=params['min_improvement'])
+    return scores
 
 
 def train_cv(
@@ -610,10 +634,7 @@ if __name__ == '__main__':
     MIN_IMPROVEMENT = 1E-3
     NUM_FOLDS = 5
     CLF_PARAMS_SPACE = {
-        'model': ['FeedForwardNN'],
         'batch_size': [2**i for i in range(8, 12)],
-        'hidden_size_1': list(range(0, 201, 50)),
-        'learning_rate': [i*1E-4 for i in [1, 2, 5, 10]],
         'weight_decay': [10**i for i in range(-6, -4)],
         'momentum': np.arange(0., 0.91, 0.1),
         'num_epochs': [200],
@@ -623,7 +644,24 @@ if __name__ == '__main__':
         'optimizer': ["optim.SGD"],
         'trainable_emb': [True],
     }
-    NUM_SAMPLES = 50
+    CLF_MODEL = 'RecurrentNN'
+    if CLF_MODEL == 'FeedForwardNN':
+        CLF_PARAMS_SPACE.update({
+            'model': ['FeedForwardNN'],
+            'hidden_size_1': list(range(0, 201, 50)),
+            'emb_agg': ['mean'],
+            'learning_rate': [i*1E-4 for i in [1, 2, 5, 10]],
+        })
+    elif CLF_MODEL == 'RecurrentNN':
+        CLF_PARAMS_SPACE.update({
+            'model': ['RecurrentNN'],
+            'hidden_dim_rnn': list(range(50, 201, 50)),
+            'learning_rate': [i*1E-3 for i in [.8, 1., 2, 4]],
+            'dropout': np.arange(0., 0.51, 0.1),
+        })
+    else:
+        raise ValueError(f"Unknown classifier model {CLF_MODEL}")
+    NUM_SAMPLES = 10
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"Use device {device}")
     data_dir = get_data_dir()
@@ -656,9 +694,8 @@ if __name__ == '__main__':
         run_random_search(
             X_train, y_train, weights, CLF_PARAMS_SPACE, params_score,
             num_samples=NUM_SAMPLES)
-        cv_scores = train_cv(
-            X_train, y_train, model, criterion, optimizer, NUM_EPOCHS,
-            BATCH_SIZE, patience=PATIENCE, min_improvement=MIN_IMPROVEMENT)
+        best_params, score = get_best_params(params_score)
+        cv_scores = train_for_params(X_train, y_train, weights, best_params)
         # analysis = run_eda(train_data, test_data)
     else:
         if DOWNSAMPLE and FULL_SIZE_FOR_SUBMIT:  # recompute train data

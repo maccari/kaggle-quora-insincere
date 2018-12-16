@@ -15,6 +15,7 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import f1_score
 import random
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from typing import Dict, Any, Iterator
 import sys
 
 logging.basicConfig(
@@ -390,12 +391,23 @@ def batchify(l, batch_size):
         yield l[offset:offset+batch_size]
 
 
-def generate_random_params(params_space, num_samples):
-    """ yield a generator of parameters """
+def generate_random_params(
+        params_space: Dict[str, Any], num_samples: int
+        ) -> Iterator[Dict[str, Any]]:
+    """ yield a generator of parameters, drawing a value for each param
+        :param params_space: maps param -> values
+            if values is a list, draw a random element from it,
+            else return values
+        :param num_samples: number of combinations to generate
+    """
     for _ in range(num_samples):
         params = {}
         for param, values in params_space.items():
-            params[param] = np.random.choice(values).item()
+            if type(values) == list:
+                value = np.random.choice(values).item()
+            else:
+                value = values
+            params[param] = value
         yield params
 
 
@@ -415,7 +427,7 @@ def run_random_search(
         if tuple_params in params_score:
             continue
         logger.info(f"drawn params: {params}")
-        scores = train_for_params(
+        model, scores = train_for_params(
             X, y, weights, params, train_ratio, num_folds)
         params_score[tuple_params] = scores
         logger.info(f"Max score for params: {max(scores, default=0.)}")
@@ -436,38 +448,55 @@ def get_best_params(params_score):
 def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
     """ train classifier for given parameters
     """
-    if params['model'] == 'FeedForwardNN':
-        model = FeedForwardNN(
-            input_size=weights.shape[1], num_classes=len(set(y)),
-            weights=weights, trainable_emb=params['trainable_emb'],
-            hidden1=params['hidden_size_1'])
-    elif params['model'] == 'RecurrentNN':
-        model = RecurrentNN(
-            input_size=weights.shape[1], num_classes=len(set(y)),
-            weights=weights, trainable_emb=params['trainable_emb'],
-            hidden_dim_rnn=params['hidden_dim_rnn'], dropout=params['dropout'])
+    model = build_model_from_params(params, len(set(y)), weights)
+    if params['criterion'] == 'CrossEntropyLoss':
+        criterion = nn.CrossEntropyLoss()
     else:
-        raise ValueError(f"Unknown model {params['model']}")
-    criterion = eval(params['criterion'])()
-    optimizer = eval(params['optimizer'])(
-        model.parameters(), lr=params['learning_rate'],
-        momentum=params['momentum'], weight_decay=params['weight_decay'])
+        raise ValueError(f"Unknown criterion {params['criterion']}")
+    if params['optimizer'] == 'SGD':
+        optimizer = optim.SGD(
+            model.parameters(), lr=params['learning_rate'],
+            momentum=params['momentum'], weight_decay=params['weight_decay'])
+    else:
+        raise ValueError(f"Unknown optimizer {params['optimizer']}")
     if num_folds:
         scores = train_cv(
             X, y, model, criterion, optimizer, params['num_epochs'],
-            params['batch_size'])
-    else:
+            params['batch_size'], patience=params['patience'],
+            min_improvement=params['min_improvement'])
+    elif train_ratio:
         sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio)
         train_index, test_index = next(sss.split(X, y))
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y[train_index], y[test_index]
         scores = train(
             X_train, X_test, y_train, y_test, model, criterion, optimizer,
-            num_epochs=params['num_epochs'],
-            batch_size=params['batch_size'],
+            num_epochs=params['num_epochs'], batch_size=params['batch_size'],
             patience=params['patience'],
             min_improvement=params['min_improvement'])
-    return scores
+    else:
+        scores = train(
+            X, X, y, y, model, criterion, optimizer,
+            num_epochs=params['num_epochs'], batch_size=params['batch_size'],
+            patience=params['patience'],
+            min_improvement=params['min_improvement'])
+    return model, scores
+
+
+def build_model_from_params(params, num_classes, weights):
+    if params['clf_model'] == 'FeedForwardNN':
+        model = FeedForwardNN(
+            input_size=weights.shape[1], num_classes=num_classes,
+            weights=weights, trainable_emb=params['trainable_emb'],
+            hidden1=params['hidden_size_1'])
+    elif params['clf_model'] == 'RecurrentNN':
+        model = RecurrentNN(
+            input_size=weights.shape[1], num_classes=num_classes,
+            weights=weights, trainable_emb=params['trainable_emb'],
+            hidden_dim_rnn=params['hidden_dim_rnn'], dropout=params['dropout'])
+    else:
+        raise ValueError(f"Unknown model {params['clf_model']}")
+    return model
 
 
 def train_cv(
@@ -621,107 +650,127 @@ def build_vocab(data):
     return vocab
 
 
-if __name__ == '__main__':
-    SUBMIT = True
-    FULL_SIZE_FOR_SUBMIT = False
-    SEED = np.random.randint(1E9)
-    set_seeds(SEED)
-    logger.info(f"SEED: {SEED}")
-    logger.info(f"torch.initial_seed(): {torch.initial_seed()}")
-    LOWER = True
-    DOWNSAMPLE = 0.  # None, 0 or 1 to ignore
-    MAX_IMBALANCE_RATIO = 3.
-    MAX_SEQ_LEN = 50
-    BATCH_SIZE = 1000
-    HIDDEN_SIZE_1 = 100
-    LEARNING_RATE = 2E-4
-    WEIGHT_DECAY = 1E-6
-    MOMENTUM = 0.5
-    VOCAB_SIZE = 1E6
-    EMBEDDING_MODEL = 'glove.840B.300d/glove.840B.300d.txt'
-    TRAINABLE_EMB = True
-    SPACY_MODEL = 'en_core_web_sm'
-    NUM_EPOCHS = 200
-    PATIENCE = 40
-    MIN_IMPROVEMENT = 1E-3
-    NUM_FOLDS = 5
-    CLF_PARAMS_SPACE = {
+def get_saved_best_params():
+    best_params = {
+        'seed': 0,
+        'lower': True,
+        'downsample': 0.0,
+        'max_imbalance_ratio': 3.0,
+        'max_seq_len': 50,
+        'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
+        'vocab_size': 1000000,
+        'spacy_model': 'en_core_web_sm',
+        'batch_size': 256,
+        'weight_decay': 1e-06,
+        'momentum': 0.8,
+        'num_epochs': 200,
+        'patience': 10,
+        'min_improvement': 0.01,
+        'criterion': 'CrossEntropyLoss',
+        'optimizer': 'SGD',
+        'trainable_emb': True,
+        'train_ratio': 0.8,
+        'num_folds': None,
+        'clf_model': 'RecurrentNN',
+        'hidden_dim_rnn': 100,
+        'learning_rate': 0.0008,
+        'dropout': 0.5,
+    }
+    return best_params
+
+
+def get_params_space():
+    PARAMS_SPACE = {
+        'seed': np.random.randint(1E9),
+        'lower': True,
+        'downsample': 1.,  # None, 0 or 1 to ignore
+        'max_imbalance_ratio': 3.,
+        'max_seq_len': 50,
+        'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
+        'vocab_size': 1E6,
+        'spacy_model': 'en_core_web_sm',
         'batch_size': [2**i for i in range(8, 12)],
         'weight_decay': [10**i for i in range(-6, -4)],
-        'momentum': np.arange(0., 0.91, 0.1),
-        'num_epochs': [200],
-        'patience': [10],
-        'min_improvement': [1E-2],
-        'criterion': ["nn.CrossEntropyLoss"],
-        'optimizer': ["optim.SGD"],
-        'trainable_emb': [True],
+        'momentum': np.arange(0., 0.91, 0.1).tolist(),
+        'num_epochs': 200,
+        'patience': 10,
+        'min_improvement': 1E-2,
+        'criterion': "CrossEntropyLoss",
+        'optimizer': "SGD",
+        'trainable_emb': True,
+        'train_ratio': 0.8,
+        'num_folds': None,
+        'clf_model': 'RecurrentNN',
     }
-    CLF_MODEL = 'RecurrentNN'
-    if CLF_MODEL == 'FeedForwardNN':
-        CLF_PARAMS_SPACE.update({
-            'model': ['FeedForwardNN'],
+    if PARAMS_SPACE['clf_model'] == 'FeedForwardNN':
+        PARAMS_SPACE.update({
             'hidden_size_1': list(range(0, 201, 50)),
             'emb_agg': ['mean'],
             'learning_rate': [i*1E-4 for i in [1, 2, 5, 10]],
         })
-    elif CLF_MODEL == 'RecurrentNN':
-        CLF_PARAMS_SPACE.update({
-            'model': ['RecurrentNN'],
+    elif PARAMS_SPACE['clf_model'] == 'RecurrentNN':
+        PARAMS_SPACE.update({
             'hidden_dim_rnn': list(range(50, 201, 50)),
             'learning_rate': [i*1E-3 for i in [.8, 1., 2, 4]],
-            'dropout': np.arange(0., 0.51, 0.1),
+            'dropout': np.arange(0., 0.51, 0.1).tolist(),
         })
     else:
-        raise ValueError(f"Unknown classifier model {CLF_MODEL}")
-    NUM_SAMPLES = 10
+        raise ValueError(
+            f"Unknown classifier model {PARAMS_SPACE['clf_model']}")
+    return PARAMS_SPACE
+
+
+if __name__ == '__main__':
+    SUBMIT = False
+    PARAMS_SPACE = get_params_space()
+    best_params = get_saved_best_params()
+    set_seeds(PARAMS_SPACE['seed'])
+    logger.info(f"SEED: {PARAMS_SPACE['seed']}")
+    logger.info(f"torch.initial_seed(): {torch.initial_seed()}")
+    NUM_SAMPLES = 20
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"Use device {device}")
     data_dir = get_data_dir()
     embed_dir = os.path.join(data_dir, 'embeddings/')
     log_dir = get_log_dir()
     train_data, test_data = load_data(data_dir)
-    train_data = downsample(train_data, DOWNSAMPLE, MAX_IMBALANCE_RATIO)
-    nlp = spacy.load(SPACY_MODEL)
+    train_data = downsample(
+        train_data, PARAMS_SPACE['downsample'],
+        PARAMS_SPACE['max_imbalance_ratio'])
+    nlp = spacy.load(PARAMS_SPACE['spacy_model'])
     tokenizer = Tokenizer(nlp.vocab)
-    preprocess_data(train_data, tokenizer, LOWER)
-    preprocess_data(test_data, tokenizer, LOWER)
+    preprocess_data(train_data, tokenizer, PARAMS_SPACE['lower'])
+    preprocess_data(test_data, tokenizer, PARAMS_SPACE['lower'])
     train_vocab = build_vocab(train_data)
     weights, vocab = load_embeddings(
-        embed_dir, model=EMBEDDING_MODEL, top_n=VOCAB_SIZE,
-        vocab_filter=train_vocab, oov_vocab=train_vocab)
+        embed_dir, model=PARAMS_SPACE['embedding_model'],
+        top_n=PARAMS_SPACE['vocab_size'], vocab_filter=train_vocab,
+        oov_vocab=train_vocab)
     logger.info(f"Vocab size: {len(vocab)}")
     emb_size = weights.shape[1]
     num_classes = len(set(train_data['target']))
-    X_train = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
+    X_train = map_to_input_space(
+        train_data, vocab, PARAMS_SPACE['max_seq_len'])
     y_train = train_data['target'].values
-    model = FeedForwardNN(
-        input_size=emb_size, num_classes=num_classes, weights=weights,
-        trainable_emb=TRAINABLE_EMB, hidden1=HIDDEN_SIZE_1)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(
-        model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM,
-        weight_decay=WEIGHT_DECAY)
     if not SUBMIT:
         params_score = {}
         run_random_search(
-            X_train, y_train, weights, CLF_PARAMS_SPACE, params_score,
-            num_samples=NUM_SAMPLES)
+            X_train, y_train, weights, PARAMS_SPACE, params_score,
+            NUM_SAMPLES, PARAMS_SPACE['train_ratio'],
+            PARAMS_SPACE['num_folds'])
         best_params, score = get_best_params(params_score)
-        cv_scores = train_for_params(X_train, y_train, weights, best_params)
+        model, scores = train_for_params(
+            X_train, y_train, weights, best_params, best_params['train_ratio'],
+            best_params['num_folds'])
         # analysis = run_eda(train_data, test_data)
     else:
-        if DOWNSAMPLE and FULL_SIZE_FOR_SUBMIT:  # recompute train data
-            train_data, test_data = load_data(data_dir)
-            preprocess_data(train_data, tokenizer, LOWER)
-            X_train = map_to_input_space(train_data, vocab, MAX_SEQ_LEN)
-            y_train = train_data['target'].values
         logger.info("final training")
-        scores = train(
-            X_train, X_train, y_train, y_train, model, criterion, optimizer,
-            NUM_EPOCHS, BATCH_SIZE, patience=PATIENCE,
-            min_improvement=MIN_IMPROVEMENT)
+        model, scores = train_for_params(
+            X_train, y_train, weights, best_params, best_params['train_ratio'],
+            best_params['num_folds'])
         logger.info("preprocess and predict target on test set")
-        X_test = map_to_input_space(test_data, vocab, MAX_SEQ_LEN)
+        X_test = map_to_input_space(
+            test_data, vocab, PARAMS_SPACE['max_seq_len'])
         X_test = torch.from_numpy(X_test)
         test_data['prediction'] = predict(X_test, model)
         test_data[['qid', 'prediction']].to_csv('submission.csv', index=False)

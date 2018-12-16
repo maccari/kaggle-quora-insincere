@@ -25,12 +25,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def my_handler(type, value, tb):
-    logger.exception("Uncaught exception: {0}".format(str(value)))
+def handle_exception(exc_type, exc_value, exc_traceback):
+    exc_info = (exc_type, exc_value, exc_traceback)
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(*exc_info)
+        return
+    logger.error("Uncaught exception", exc_info=exc_info)
 
 
-# Install exception handler
-sys.excepthook = my_handler
+sys.excepthook = handle_exception
 
 
 def set_seeds(seed):

@@ -15,7 +15,7 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import f1_score
 import random
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from typing import Dict, Any, Iterator
+from typing import Dict, Any, Iterator, Tuple, Iterable
 import sys
 
 logging.basicConfig(
@@ -420,6 +420,9 @@ def run_random_search(
         train_ratio=0.8, num_folds=None):
     """ perform random search
         if num_folds is not None, train_ratio is ignored
+        fill params_score dictionary with params -> scores
+        if num_folds is not None, scores is a list of list of scores per fold
+        per iteration, else scores is a list of scores per iteration
     """
     param_samples = generate_random_params(params_space, num_samples)
     for params in param_samples:
@@ -430,19 +433,42 @@ def run_random_search(
         model, scores = train_for_params(
             X, y, weights, params, train_ratio, num_folds)
         params_score[tuple_params] = scores
-        logger.info(f"Max score for params: {max(scores, default=0.)}")
-        best_params, score = get_best_params(params_score)
-        logger.info(f"Best params so far {score} using {best_params}")
+        score = get_params_score(scores, params['num_folds'] is not None)
+        logger.info(f"Max score for params: {score}")
+        best_params, best_score = get_best_params(params_score)
+        logger.info(f"Best params so far {best_score} using {best_params}")
 
 
-def get_best_params(params_score):
+def get_best_params(
+        params_score: Dict[Tuple[Any], Iterable]
+        ) -> Tuple[Dict[Tuple, Any], float]:
     """ return (best_params, score) given dictionary of
         params -> score per iteration
+        :param params_score: params argument is a dict mapping a tuple of pairs
+         (param, value) to scores
+        return: params returned is a dict
     """
-    params, score = sorted(
-        [(params, max(scores)) for params, scores in params_score.items()],
-        key=lambda x: x[1], reverse=True)[0]
-    return params, score
+    best_params, best_score = {}, 0.
+    for params, scores in params_score.items():
+        params_dict = dict(params)
+        score = get_params_score(scores, params_dict['num_folds'] is not None)
+        if score > best_score:
+            best_params, best_score = params_dict, score
+    return best_params, best_score
+
+
+def get_params_score(scores: list, cv: bool = False) -> float:
+    """ return max score of all epochs
+        if cv=False, scores should be a list of score per epoch, else scores
+        should be a list of list of score per epoch per fold of
+        cross-validation
+    """
+    if cv:
+        folds_score = [max(fold_scores, default=0.) for fold_scores in scores]
+        score = np.mean(folds_score) if folds_score else 0.
+    else:
+        score = max(scores, default=0.)
+    return score
 
 
 def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):

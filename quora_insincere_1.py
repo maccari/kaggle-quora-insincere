@@ -102,7 +102,7 @@ def load_data(data_dir, use_saved=False, shuffle=True):
 
 def load_embeddings(
         data_dir, model, top_n=0, vocab_filter=None, oov_vocab=None,
-        padding_token='_PAD_', oov_token='_OOV_'):
+        padding_token='_PAD_', oov_token='_OOV_', lower=False):
     """ load embedding model in memory
         if top_n > 0, load the first top_n embeddings in file
         if vocab_filter is not None, ignore top_n
@@ -110,6 +110,8 @@ def load_embeddings(
             mean weight
         padding_token has idx 0
         oov_token has idx 1
+        if lower, if a word is non-lower and has no lower version, use it as
+            lower version
     """
     logger.info("load embeddings")
     vocab = {padding_token: 0, oov_token: 1}
@@ -122,12 +124,22 @@ def load_embeddings(
                 break
             line = line.rstrip('\n').split(' ')
             word, vector = line[0], list(map(float, line[1:]))
+            original_word = word
+            if lower:
+                word = word.lower()
             if vocab_filter and word not in vocab_filter:
                 continue
-            vocab[word] = len(vocab)
-            weights.append(vector)
+            if word in vocab:
+                if lower and original_word.islower():
+                    # previous encounter was not lower, replace with current
+                    weights[vocab[word]] = vector
+            else:
+                vocab[word] = len(vocab)
+                weights.append(vector)
     if len(weights) <= 2:
         raise ValueError("No weight loaded")
+    if vocab_filter:
+        logger.info(f"Found {len(vocab)}/{len(vocab_filter)} tokens in model")
     emb_size = len(weights[2])
     weights[vocab[padding_token]] = [0.] * emb_size
     weights[vocab[oov_token]] = [0.] * emb_size
@@ -771,7 +783,7 @@ if __name__ == '__main__':
     weights, vocab = load_embeddings(
         embed_dir, model=PARAMS_SPACE['embedding_model'],
         top_n=PARAMS_SPACE['vocab_size'], vocab_filter=train_vocab,
-        oov_vocab=train_vocab)
+        oov_vocab=train_vocab, lower=PARAMS_SPACE['lower'])
     logger.info(f"Vocab size: {len(vocab)}")
     emb_size = weights.shape[1]
     num_classes = len(set(train_data['target']))

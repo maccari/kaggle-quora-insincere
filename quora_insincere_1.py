@@ -534,6 +534,7 @@ def build_model_from_params(params, num_classes, weights):
             hidden_dim_rnn=params['hidden_dim_rnn'], dropout=params['dropout'])
     else:
         raise ValueError(f"Unknown model {params['clf_model']}")
+    logger.info(f"Built model:\n{model}")
     return model
 
 

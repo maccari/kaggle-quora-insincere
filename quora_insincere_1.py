@@ -690,29 +690,29 @@ def build_vocab(data):
 
 def get_saved_best_params():
     best_params = {
-        'seed': 0,
+        'batch_size': 256,
+        'clf_model': 'RecurrentNN',
+        'criterion': 'CrossEntropyLoss',
+        'downsample': 1.,
+        'dropout': 0.5,
+        'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
+        'hidden_dim_rnn': 150,
+        'learning_rate': 0.004,
         'lower': True,
-        'downsample': 0.0,
         'max_imbalance_ratio': 3.0,
         'max_seq_len': 50,
-        'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
-        'vocab_size': 1000000,
-        'spacy_model': 'en_core_web_sm',
-        'batch_size': 256,
-        'weight_decay': 1e-06,
-        'momentum': 0.8,
-        'num_epochs': 200,
-        'patience': 10,
         'min_improvement': 0.01,
-        'criterion': 'CrossEntropyLoss',
-        'optimizer': 'SGD',
-        'trainable_emb': True,
-        'train_ratio': 0.8,
+        'momentum': 0.6000000000000001,
+        'num_epochs': 200,
         'num_folds': None,
-        'clf_model': 'RecurrentNN',
-        'hidden_dim_rnn': 100,
-        'learning_rate': 0.0008,
-        'dropout': 0.5,
+        'optimizer': 'SGD',
+        'patience': 10,
+        'seed': 21757971,
+        'spacy_model': 'en_core_web_sm',
+        'train_ratio': 0.8,
+        'trainable_emb': True,
+        'vocab_size': 1000000.0,
+        'weight_decay': 1e-06
     }
     return best_params
 
@@ -759,9 +759,11 @@ def get_params_space():
 
 
 if __name__ == '__main__':
-    SUBMIT = False
+    SUBMIT = True
     PARAMS_SPACE = get_params_space()
     best_params = get_saved_best_params()
+    if SUBMIT:
+        PARAMS_SPACE = best_params
     set_seeds(PARAMS_SPACE['seed'])
     logger.info(f"SEED: {PARAMS_SPACE['seed']}")
     logger.info(f"torch.initial_seed(): {torch.initial_seed()}")

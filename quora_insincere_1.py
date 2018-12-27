@@ -290,8 +290,9 @@ class RecurrentNN(nn.Module):
     def __init__(
             self, input_size, num_classes, weights, trainable_emb=False,
             hidden_dim_rnn=50, num_layers_rnn=1, unit_type='LSTM', dropout=0.,
-            padding_idx=0, bidirectional=True, maxpooling=True):
         """ unit_type: 'LSTM' or 'GRU' """
+            padding_idx=0, bidirectional=True, maxpooling=True,
+            hidden_linear1=None):
         super().__init__()
         self.input_size = input_size
         self.weights = weights
@@ -306,17 +307,16 @@ class RecurrentNN(nn.Module):
         if unit_type == 'LSTM':
             self.rnn = nn.LSTM(
                 self.input_size, self.hidden_dim_rnn, self.num_layers_rnn,
-                bidirectional=self.bidirectional, batch_first=True,
-                dropout=dropout)
+                bidirectional=self.bidirectional, batch_first=True)
         elif unit_type == 'GRU':
             self.rnn = nn.GRU(
                 input_size, self.hidden_dim_rnn, self.num_layers_rnn,
-                bidirectional=self.bidirectional, batch_first=True,
-                dropout=dropout)
+                bidirectional=self.bidirectional, batch_first=True)
         else:
             raise ValueError(f"Unknown unit_type {unit_type}")
         self.linear1 = nn.Linear(
             self.hidden_dim_rnn * (1+self.bidirectional), num_classes)
+        self.dropout = nn.Dropout(p=dropout)
         if self.maxpooling:
             # as opposed to MaxPool1D, AdaptiveMaxPool1d does not need kernel
             # size (== max_seq_len batch) which is different for since we have
@@ -363,6 +363,9 @@ class RecurrentNN(nn.Module):
             # [batch_size, max_seq_len (of batch), (1+is_bidir)*hidden_dim_rnn]
             last_step_rnn_out = torch.cat(tuple(self.hidden_rnn[0]), dim=1)
             out = last_step_rnn_out[unsort_idx]
+        # note that dropout argument of RNN layer applies dropout on all but
+        # the last layer, so it is not applied if num_layers_rnn = 1
+        out = self.dropout(out)
         out = self.activation(self.linear1(out), dim=1)
         return out
 

@@ -290,9 +290,12 @@ class RecurrentNN(nn.Module):
     def __init__(
             self, input_size, num_classes, weights, trainable_emb=False,
             hidden_dim_rnn=50, num_layers_rnn=1, unit_type='LSTM', dropout=0.,
-        """ unit_type: 'LSTM' or 'GRU' """
             padding_idx=0, bidirectional=True, maxpooling=True,
             hidden_linear1=None):
+        """ unit_type: 'LSTM' or 'GRU'
+            if hidden_linear1 is not None, dim of hidden linear layer, else no
+                hidden linear layer
+        """
         super().__init__()
         self.input_size = input_size
         self.weights = weights
@@ -303,6 +306,7 @@ class RecurrentNN(nn.Module):
         self.maxpooling = maxpooling
         self.unit_type = unit_type
         self.padding_idx = padding_idx
+        self.out_rnn_dim = self.hidden_dim_rnn * (1+self.bidirectional)
         self._init_embeddings()
         if unit_type == 'LSTM':
             self.rnn = nn.LSTM(
@@ -314,9 +318,13 @@ class RecurrentNN(nn.Module):
                 bidirectional=self.bidirectional, batch_first=True)
         else:
             raise ValueError(f"Unknown unit_type {unit_type}")
-        self.linear1 = nn.Linear(
-            self.hidden_dim_rnn * (1+self.bidirectional), num_classes)
         self.dropout = nn.Dropout(p=dropout)
+        if hidden_linear1:
+            self.linear1 = nn.Linear(self.out_rnn_dim, hidden_linear1)
+            self.linear2 = nn.Linear(hidden_linear1, num_classes)
+        else:
+            self.linear1 = nn.Linear(self.out_rnn_dim, num_classes)
+            self.linear2 = None
         if self.maxpooling:
             # as opposed to MaxPool1D, AdaptiveMaxPool1d does not need kernel
             # size (== max_seq_len batch) which is different for since we have
@@ -366,7 +374,10 @@ class RecurrentNN(nn.Module):
         # note that dropout argument of RNN layer applies dropout on all but
         # the last layer, so it is not applied if num_layers_rnn = 1
         out = self.dropout(out)
-        out = self.activation(self.linear1(out), dim=1)
+        out = self.linear1(out)
+        if self.linear2:
+            out = self.linear2(out)
+        out = self.activation(out, dim=1)
         return out
 
     def predict_proba(self, inputs):
@@ -534,7 +545,8 @@ def build_model_from_params(params, num_classes, weights):
         model = RecurrentNN(
             input_size=weights.shape[1], num_classes=num_classes,
             weights=weights, trainable_emb=params['trainable_emb'],
-            hidden_dim_rnn=params['hidden_dim_rnn'], dropout=params['dropout'])
+            hidden_dim_rnn=params['hidden_dim_rnn'], dropout=params['dropout'],
+            hidden_linear1=params['hidden_linear1'])
     else:
         raise ValueError(f"Unknown model {params['clf_model']}")
     logger.info(f"Built model:\n{model}")
@@ -701,6 +713,7 @@ def get_saved_best_params():
         'dropout': 0.5,
         'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
         'hidden_dim_rnn': 150,
+        'hidden_linear1': None,
         'learning_rate': 0.004,
         'lower': True,
         'max_imbalance_ratio': 3.0,
@@ -753,6 +766,7 @@ def get_params_space():
     elif PARAMS_SPACE['clf_model'] == 'RecurrentNN':
         PARAMS_SPACE.update({
             'hidden_dim_rnn': list(range(50, 201, 50)),
+            'hidden_linear1': list(range(50, 201, 50)),
             'learning_rate': [i*1E-3 for i in [.8, 1., 2, 4]],
             'dropout': np.arange(0., 0.51, 0.1).tolist(),
         })

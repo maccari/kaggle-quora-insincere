@@ -637,11 +637,16 @@ def predict(inputs, model, batch_size=1000):
     """ predict classes given inputs and model, used to process by batch if
         large number of inputs
     """
+    is_training = model.training
+    if is_training:
+        model.eval()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     predictions = []
     for input_batch in batchify(inputs, batch_size):
         input_batch = input_batch.to(device)
         predictions.extend(model.predict(input_batch).cpu().numpy())
+    if is_training:  # set back to training mode
+        model.train()
     return predictions
 
 

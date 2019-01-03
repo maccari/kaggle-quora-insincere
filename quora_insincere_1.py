@@ -105,7 +105,7 @@ def load_embeddings(
         padding_token='_PAD_', oov_token='_OOV_', lower=False):
     """ load embedding model in memory
         if top_n > 0, load the first top_n embeddings in file
-        if vocab_filter is not None, ignore top_n
+        if vocab_filter, load only tokens in vocab_filter
         if oov_vocab, add tokens in it that is not in vocab, init them using
             mean weight
         padding_token has idx 0
@@ -120,7 +120,7 @@ def load_embeddings(
         for idx, line in enumerate(ifs):
             if idx % 10000 == 0:
                 logger.debug(idx)
-            if not vocab_filter and top_n and idx >= top_n:
+            if top_n and idx >= top_n:
                 break
             line = line.rstrip('\n').split(' ')
             word, vector = line[0], list(map(float, line[1:]))
@@ -704,12 +704,16 @@ def unison_shuffled_copies(a, b):
     return a[p], b[p]
 
 
-def build_vocab(data):
+def build_vocab(data, vocab_size=0):
     """ return set containing all distinct tokens appearing in the data
     """
-    vocab = set()
+    vocab = Counter()
     for tokenized in data['tokenized'].values:
         vocab.update(tokenized)
+    if vocab_size > 0:
+        vocab = set(list(zip(*vocab.most_common(vocab_size)))[0])
+    else:
+        vocab = set(vocab)
     return vocab
 
 
@@ -737,8 +741,9 @@ def get_saved_best_params():
         'spacy_model': 'en_core_web_sm',
         'train_ratio': 0.8,
         'trainable_emb': True,
-        'vocab_size': 1000000.0,
-        'weight_decay': 1e-06
+        'weight_decay': 1e-06,
+        'vocab_size': 50000,
+        'embeddings_top_n': 0
     }
     return best_params
 
@@ -751,7 +756,8 @@ def get_params_space():
         'max_imbalance_ratio': 3.,
         'max_seq_len': 50,
         'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
-        'vocab_size': 1E6,
+        'vocab_size': 50000,
+        'embeddings_top_n': 0,
         'spacy_model': 'en_core_web_sm',
         'batch_size': [2**i for i in range(8, 12)],
         'weight_decay': [10**i for i in range(-6, -4)],
@@ -808,11 +814,11 @@ if __name__ == '__main__':
     tokenizer = Tokenizer(nlp.vocab)
     preprocess_data(train_data, tokenizer, PARAMS_SPACE['lower'])
     preprocess_data(test_data, tokenizer, PARAMS_SPACE['lower'])
-    train_vocab = build_vocab(train_data)
+    train_vocab = build_vocab(train_data, PARAMS_SPACE['vocab_size'])
     weights, vocab = load_embeddings(
         embed_dir, model=PARAMS_SPACE['embedding_model'],
-        top_n=PARAMS_SPACE['vocab_size'], vocab_filter=train_vocab,
-        oov_vocab=train_vocab, lower=PARAMS_SPACE['lower'])
+        vocab_filter=train_vocab, oov_vocab=train_vocab,
+        lower=PARAMS_SPACE['lower'], top_n=PARAMS_SPACE['embeddings_top_n'])
     logger.info(f"Vocab size: {len(vocab)}")
     emb_size = weights.shape[1]
     num_classes = len(set(train_data['target']))

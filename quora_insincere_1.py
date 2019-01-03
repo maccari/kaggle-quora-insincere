@@ -509,6 +509,10 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
         optimizer = optim.SGD(
             model.parameters(), lr=params['learning_rate'],
             momentum=params['momentum'], weight_decay=params['weight_decay'])
+    elif params['optimizer'] == 'Adam':
+        optimizer = optim.Adam(
+            model.parameters(), lr=params['learning_rate'],
+            weight_decay=params['weight_decay'])
     else:
         raise ValueError(f"Unknown optimizer {params['optimizer']}")
     if num_folds:
@@ -751,7 +755,7 @@ def get_params_space():
         'patience': 10,
         'min_improvement': 1E-2,
         'criterion': "CrossEntropyLoss",
-        'optimizer': "SGD",
+        'optimizer': ["SGD", "Adam"],
         'trainable_emb': True,
         'train_ratio': 0.8,
         'num_folds': None,

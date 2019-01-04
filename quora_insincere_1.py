@@ -249,14 +249,15 @@ class FeedForwardNN(nn.Module):
 
     def _init_embeddings(self):
         num_emb, emb_size = self.weights.shape
+        # by default the nn.Embedding layer outputs a double tensor
         self.embed1 = nn.Embedding(
             num_emb, emb_size, self.padding_idx,
-            _weight=torch.from_numpy(self.weights))
+            _weight=torch.from_numpy(self.weights)).float()
         self.embed1.weight.requires_grad = self.trainable_emb
 
     def forward(self, inputs, inputs_lengths=None):
         """ forward pass """
-        embed1 = self.embed1(inputs).to(torch.float)
+        embed1 = self.embed1(inputs)
         agg_embed1 = embed1.sum(dim=1)
         if self.emb_agg == 'mean':
             if inputs_lengths is None:
@@ -334,14 +335,15 @@ class RecurrentNN(nn.Module):
 
     def _init_embeddings(self):
         num_emb, emb_size = self.weights.shape
+        # by default the nn.Embedding layer outputs a double tensor
         self.embed1 = nn.Embedding(
             num_emb, emb_size, self.padding_idx,
-            _weight=torch.from_numpy(self.weights))
+            _weight=torch.from_numpy(self.weights)).float()
         self.embed1.weight.requires_grad = self.trainable_emb
 
     def forward(self, inputs, inputs_lengths=None):
         """ forward pass """
-        embed1 = self.embed1(inputs).to(torch.float)
+        embed1 = self.embed1(inputs)
         if inputs_lengths is None:
             inputs_lengths = (inputs != self.padding_idx).sum(dim=1)
         # reset state at beginning of each batch
@@ -519,7 +521,8 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
         scores = train_cv(
             X, y, model, criterion, optimizer, params['num_epochs'],
             params['batch_size'], patience=params['patience'],
-            min_improvement=params['min_improvement'])
+            min_improvement=params['min_improvement'],
+            clip_grad_norm=params.get('clip_grad_norm', .0))
     elif train_ratio:
         sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio)
         train_index, test_index = next(sss.split(X, y))
@@ -529,13 +532,15 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
             X_train, X_test, y_train, y_test, model, criterion, optimizer,
             num_epochs=params['num_epochs'], batch_size=params['batch_size'],
             patience=params['patience'],
-            min_improvement=params['min_improvement'])
+            min_improvement=params['min_improvement'],
+            clip_grad_norm=params.get('clip_grad_norm', .0))
     else:
         scores = train(
             X, X, y, y, model, criterion, optimizer,
             num_epochs=params['num_epochs'], batch_size=params['batch_size'],
             patience=params['patience'],
-            min_improvement=params['min_improvement'])
+            min_improvement=params['min_improvement'],
+            clip_grad_norm=params.get('clip_grad_norm', .0))
     return model, scores
 
 
@@ -559,7 +564,8 @@ def build_model_from_params(params, num_classes, weights):
 
 def train_cv(
         X, y, model, criterion, optimizer, num_epochs, batch_size,
-        num_folds=5, metric='f1_score', patience=10, min_improvement=0.):
+        num_folds=5, metric='f1_score', patience=10, min_improvement=0.,
+        clip_grad_norm=.0):
     """ train using cross-validation
         return score per iteration per fold
     """
@@ -571,7 +577,8 @@ def train_cv(
         y_train, y_test = y[train_index], y[test_index]
         fold_scores = train(
             X_train, X_test, y_train, y_test, model, criterion, optimizer,
-            num_epochs, batch_size, metric, patience)
+            num_epochs, batch_size, metric, patience, min_improvement,
+            clip_grad_norm)
         cv_scores.append(fold_scores)
     return cv_scores
 
@@ -579,7 +586,7 @@ def train_cv(
 def train(
         X_train, X_test, y_train, y_test, model, criterion, optimizer,
         num_epochs, batch_size, metric='f1_score', patience=10,
-        min_improvement=0.):
+        min_improvement=0., clip_grad_norm=0.):
     """ train model
         return score per iteration
     """
@@ -602,6 +609,12 @@ def train(
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
+            if clip_grad_norm:
+                # gradient clipping limits the norm of the gradient to prevent
+                # the exploding gradient problems when using RNNs
+                # Note that clip_grad_norm_ currently requires all parameters
+                # to be of the same type
+                nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
             optimizer.step()
             iter += batch_size
             if iter % 100000 == 0:
@@ -743,7 +756,8 @@ def get_saved_best_params():
         'trainable_emb': True,
         'weight_decay': 1e-06,
         'vocab_size': 50000,
-        'embeddings_top_n': 0
+        'embeddings_top_n': 0,
+        'clip_grad_norm': 0.,
     }
     return best_params
 
@@ -784,6 +798,7 @@ def get_params_space():
             'hidden_linear1': list(range(50, 201, 50)),
             'learning_rate': [i*1E-3 for i in [.8, 1., 2, 4]],
             'dropout': np.arange(0., 0.51, 0.1).tolist(),
+            'clip_grad_norm': [0., 0.25]
         })
     else:
         raise ValueError(

@@ -13,6 +13,7 @@ from torch.autograd import Variable
 from functools import partial
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import f1_score
+from sklearn.utils.class_weight import compute_class_weight
 import random
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from typing import Dict, Any, Iterator, Tuple, Iterable
@@ -432,7 +433,9 @@ def generate_random_params(
         params = {}
         for param, values in params_space.items():
             if type(values) == list:
-                value = np.random.choice(values).item()
+                value = np.random.choice(values)
+                if hasattr(value, 'item'):
+                    value = value.item()
             else:
                 value = values
             params[param] = value
@@ -502,9 +505,20 @@ def get_params_score(scores: list, cv: bool = False) -> float:
 def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
     """ train classifier for given parameters
     """
-    model = build_model_from_params(params, len(set(y)), weights)
+    classes = sorted(set(y))
+    model = build_model_from_params(params, len(classes), weights)
+    weight = params['loss_weight']
+    if weight is not None:
+        if weight == ():
+            weight = compute_class_weight('balanced', classes, y)
+            logger.info("Weight loss by class using class frequency")
+        else:
+            weight = params['loss_weight']
+            logger.info(f"Weight loss by class using: {weight}")
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        weight = torch.FloatTensor(weight).to(device)
     if params['criterion'] == 'CrossEntropyLoss':
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(weight=weight)
     else:
         raise ValueError(f"Unknown criterion {params['criterion']}")
     if params['optimizer'] == 'SGD':
@@ -741,6 +755,7 @@ def get_saved_best_params():
         'hidden_dim_rnn': 150,
         'hidden_linear1': None,
         'learning_rate': 0.004,
+        'loss_weight': (1.0, 2.0),
         'lower': True,
         'max_imbalance_ratio': 3.0,
         'max_seq_len': 50,
@@ -780,6 +795,7 @@ def get_params_space():
         'patience': 10,
         'min_improvement': 1E-2,
         'criterion': "CrossEntropyLoss",
+        'loss_weight': [None, (), (1., 2.)],  # () means balanced with classes
         'optimizer': ["SGD", "Adam"],
         'trainable_emb': True,
         'train_ratio': 0.8,

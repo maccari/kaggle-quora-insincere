@@ -16,7 +16,7 @@ from sklearn.metrics import f1_score
 from sklearn.utils.class_weight import compute_class_weight
 import random
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from typing import Dict, Any, Iterator, Tuple, Iterable
+from typing import Dict, Any, Iterator, Tuple, Iterable, List
 import sys
 
 logging.basicConfig(
@@ -414,6 +414,26 @@ class RecurrentNN(nn.Module):
         self.apply(weight_reset)
 
 
+class AverageEnsemble(nn.Module):
+
+    def __init__(self, models: List[nn.Module]) -> None:
+        super().__init__()
+        self.models = models
+
+    def forward(self, inputs) -> torch.tensor:
+        preds = torch.stack([model(inputs) for model in self.models])
+        return torch.mean(preds, 0)
+
+    def predict_proba(self, inputs):
+        """ predict probability of each output class """
+        return self.forward(inputs)
+
+    def predict(self, inputs):
+        """ predict output class """
+        _, predictions = torch.max(self.predict_proba(inputs), 1)
+        return predictions
+
+
 def batchify(l, batch_size):
     """ return generator of batches of batch_size """
     for offset in range(0, len(l), batch_size):
@@ -506,37 +526,34 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
     """ train classifier for given parameters
     """
     classes = sorted(set(y))
-    model = build_model_from_params(params, len(classes), weights)
-    weight = params['loss_weight']
-    if weight is not None:
-        if weight == ():
-            weight = compute_class_weight('balanced', classes, y)
-            logger.info("Weight loss by class using class frequency")
-        else:
-            weight = params['loss_weight']
-            logger.info(f"Weight loss by class using: {weight}")
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        weight = torch.FloatTensor(weight).to(device)
-    if params['criterion'] == 'CrossEntropyLoss':
-        criterion = nn.CrossEntropyLoss(weight=weight)
-    else:
-        raise ValueError(f"Unknown criterion {params['criterion']}")
-    if params['optimizer'] == 'SGD':
-        optimizer = optim.SGD(
-            model.parameters(), lr=params['learning_rate'],
-            momentum=params['momentum'], weight_decay=params['weight_decay'])
-    elif params['optimizer'] == 'Adam':
-        optimizer = optim.Adam(
-            model.parameters(), lr=params['learning_rate'],
-            weight_decay=params['weight_decay'])
-    else:
-        raise ValueError(f"Unknown optimizer {params['optimizer']}")
+
+    def model_factory():
+        """ instantiate a new model
+            useful e.g when using cross validation to create one model per fold
+        """
+        return build_model_from_params(params, len(classes), weights)
+
+    def criterion_factory():
+        return build_criterion_from_params(params, classes, y)
+
+    def optimizer_factory(model):
+        return build_optimizer_from_params(params, model)
+
+    model = model_factory()
+    criterion = criterion_factory()
+    optimizer = optimizer_factory(model)
     if num_folds:
-        scores = train_cv(
-            X, y, model, criterion, optimizer, params['num_epochs'],
-            params['batch_size'], patience=params['patience'],
+        scores, models = train_cv(
+            X, y, model_factory, criterion_factory, optimizer_factory,
+            params['num_epochs'], params['batch_size'],
+            patience=params['patience'],
             min_improvement=params['min_improvement'],
             clip_grad_norm=params.get('clip_grad_norm', .0))
+        if params['ensemble_method'] == 'avg':
+            model = AverageEnsemble(models)
+        else:
+            raise ValueError(
+                f"Unknown ensemble method {params['ensemble_method']}")
     elif train_ratio:
         sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio)
         train_index, test_index = next(sss.split(X, y))
@@ -576,16 +593,51 @@ def build_model_from_params(params, num_classes, weights):
     return model
 
 
+def build_criterion_from_params(params, classes, y):
+    weight = params['loss_weight']
+    if weight is not None:
+        if weight == ():
+            weight = compute_class_weight('balanced', classes, y)
+            logger.info("Weight loss by class using class frequency")
+        else:
+            weight = params['loss_weight']
+            logger.info(f"Weight loss by class using: {weight}")
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        weight = torch.FloatTensor(weight).to(device)
+    if params['criterion'] == 'CrossEntropyLoss':
+        criterion = nn.CrossEntropyLoss(weight=weight)
+    else:
+        raise ValueError(f"Unknown criterion {params['criterion']}")
+    return criterion
+
+
+def build_optimizer_from_params(params, model):
+    if params['optimizer'] == 'SGD':
+        optimizer = optim.SGD(
+            model.parameters(), lr=params['learning_rate'],
+            momentum=params['momentum'], weight_decay=params['weight_decay'])
+    elif params['optimizer'] == 'Adam':
+        optimizer = optim.Adam(
+            model.parameters(), lr=params['learning_rate'],
+            weight_decay=params['weight_decay'])
+    else:
+        raise ValueError(f"Unknown optimizer {params['optimizer']}")
+    return optimizer
+
+
 def train_cv(
-        X, y, model, criterion, optimizer, num_epochs, batch_size,
-        num_folds=5, metric='f1_score', patience=10, min_improvement=0.,
-        clip_grad_norm=.0):
+        X, y, model_factory, criterion_factory, optimizer_factory, num_epochs,
+        batch_size, num_folds=5, metric='f1_score', patience=10,
+        min_improvement=0., clip_grad_norm=.0):
     """ train using cross-validation
-        return score per iteration per fold
+        return (score per iteration per fold, list of trained models)
     """
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True)
-    cv_scores = []
+    cv_scores, models = [], []
     for fold_idx, (train_index, test_index) in enumerate(skf.split(X, y)):
+        model = model_factory()
+        criterion = criterion_factory()
+        optimizer = optimizer_factory(model)
         logger.info(f"fold index: {fold_idx}")
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y[train_index], y[test_index]
@@ -594,7 +646,8 @@ def train_cv(
             num_epochs, batch_size, metric, patience, min_improvement,
             clip_grad_norm)
         cv_scores.append(fold_scores)
-    return cv_scores
+        models.append(model)
+    return cv_scores, models
 
 
 def train(
@@ -802,6 +855,8 @@ def get_params_space():
         'num_folds': None,
         'clf_model': 'RecurrentNN',
     }
+    if PARAMS_SPACE['num_folds'] is not None:
+        PARAMS_SPACE['ensemble_method'] = 'avg'
     if PARAMS_SPACE['clf_model'] == 'FeedForwardNN':
         PARAMS_SPACE.update({
             'hidden_size_1': list(range(0, 201, 50)),

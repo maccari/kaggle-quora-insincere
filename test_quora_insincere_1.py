@@ -1,10 +1,12 @@
 import unittest
 from quora_insincere_1 import (
-    FeedForwardNN, RecurrentNN, train, load_embeddings, get_data_dir)
+    FeedForwardNN, RecurrentNN, AverageEnsemble, train, load_embeddings,
+    get_data_dir, evaluate)
 import numpy as np
 import torch.nn as nn
 import os
 import torch.optim as optim
+import torch
 
 
 def generate_dummy_dataset(dataset_size, vocab, max_seq_len, padding_idx=0):
@@ -87,6 +89,25 @@ class TestModels(unittest.TestCase):
         self.optimizer = optim.SGD(self.model.parameters(), lr=.005)
         scores = self._train()
         self.assertTrue(max(scores, default=0.) > .8)
+
+    def test_ensemble_avg_overfit(self):
+        """ Test avg ensemble model can overfit """
+        models = []
+        for fold_idx in range(5):
+            self.model = FeedForwardNN(
+                self.emb_size, self.num_classes, self.weights)
+            self.criterion = nn.CrossEntropyLoss()
+            self.optimizer = optim.SGD(self.model.parameters(), lr=.005)
+            self._train()
+            # copy model
+            model = FeedForwardNN(
+                self.emb_size, self.num_classes, self.weights)
+            model.load_state_dict(self.model.state_dict())
+            models.append(model)
+        ensemble_model = AverageEnsemble(models)
+        X, y = torch.from_numpy(self.X_train), torch.from_numpy(self.y_train)
+        score = evaluate(X, y, ensemble_model, 'f1_score')
+        self.assertTrue(score > .8)
 
 
 if __name__ == '__name__':

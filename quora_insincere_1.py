@@ -585,7 +585,8 @@ def build_model_from_params(params, num_classes, weights):
         model = RecurrentNN(
             input_size=weights.shape[1], num_classes=num_classes,
             weights=weights, trainable_emb=params['trainable_emb'],
-            hidden_dim_rnn=params['hidden_dim_rnn'], dropout=params['dropout'],
+            hidden_dim_rnn=params['hidden_dim_rnn'],
+            unit_type=params['unit_type'], dropout=params['dropout'],
             hidden_linear1=params['hidden_linear1'])
     else:
         raise ValueError(f"Unknown model {params['clf_model']}")
@@ -865,6 +866,7 @@ def get_params_space():
         })
     elif PARAMS_SPACE['clf_model'] == 'RecurrentNN':
         PARAMS_SPACE.update({
+            'unit_type': ['LSTM', 'GRU'],
             'hidden_dim_rnn': list(range(50, 201, 50)),
             'hidden_linear1': list(range(50, 201, 50)),
             'learning_rate': [i*1E-3 for i in [.8, 1., 2, 4]],

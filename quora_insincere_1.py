@@ -18,6 +18,7 @@ import random
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from typing import Dict, Any, Iterator, Tuple, Iterable, List
 import sys
+import copy
 
 logging.basicConfig(
     level=logging.INFO,
@@ -658,11 +659,11 @@ def train(
     """ train model
         return score per iteration
     """
-    model_checkpoint_path = 'best_model.pt'
     X_train, X_test = torch.from_numpy(X_train), torch.from_numpy(X_test)
     y_train, y_test = torch.from_numpy(y_train), torch.from_numpy(y_test)
     scores = []
     iter = 0
+    best_model_sd = None
     model.reset_weights()
     model.train()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -690,8 +691,8 @@ def train(
                     f"iter: {iter}, loss: {loss.item():.3f}")
         logger.debug(f"evaluate {metric} on: {Counter(y_test.tolist())}")
         score = evaluate(X_test, y_test, model, metric)
-        if score >= max(scores, default=0.):
-            torch.save(model.state_dict(), model_checkpoint_path)
+        if scores and score > max(scores):
+            best_model_sd = copy.deepcopy(model.state_dict())
         scores.append(score)
         logger.info(f"EPOCH {epoch}: {metric} {score:.3f}")
         if early_stopping(scores, patience, min_improvement):
@@ -699,8 +700,8 @@ def train(
                 f"Early stopping triggered (patience {patience}, "
                 f"min_improvement {min_improvement})")
             break
-    if os.path.exists(model_checkpoint_path):
-        model.load_state_dict(torch.load(model_checkpoint_path))
+    if best_model_sd:
+        model.load_state_dict(best_model_sd)
     model.eval()
     return scores
 

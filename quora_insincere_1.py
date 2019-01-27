@@ -271,14 +271,10 @@ class FeedForwardNN(nn.Module):
             out = self.activation(self.hidden1(out), dim=1)
         return out
 
-    def predict(self, inputs):
+    def predict(self, inputs, lengths=None):
         """ predict output class """
-        _, predictions = torch.max(self.predict_proba(inputs), 1)
+        _, predictions = torch.max(self.forward(inputs, lengths), 1)
         return predictions
-
-    def predict_proba(self, inputs):
-        """ predict probability of each output class """
-        return self.forward(inputs)
 
     def reset_weights(self):
         """ reset model weights """
@@ -384,13 +380,9 @@ class RecurrentNN(nn.Module):
         out = self.activation(out, dim=1)
         return out
 
-    def predict_proba(self, inputs):
-        """ predict probability of each output class """
-        return self.forward(inputs)
-
-    def predict(self, inputs):
+    def predict(self, inputs, lengths=None):
         """ predict output class """
-        _, predictions = torch.max(self.predict_proba(inputs), 1)
+        _, predictions = torch.max(self.forward(inputs, lengths), 1)
         return predictions
 
     def _init_hidden(self, batch_size):
@@ -421,17 +413,14 @@ class AverageEnsemble(nn.Module):
         super().__init__()
         self.models = models
 
-    def forward(self, inputs) -> torch.tensor:
-        preds = torch.stack([model(inputs) for model in self.models])
+    def forward(self, inputs, *args, **kwargs) -> torch.tensor:
+        outputs = [model(inputs, *args, **kwargs) for model in self.models]
+        preds = torch.stack(outputs)
         return torch.mean(preds, 0)
 
-    def predict_proba(self, inputs):
-        """ predict probability of each output class """
-        return self.forward(inputs)
-
-    def predict(self, inputs):
+    def predict(self, inputs, *args, **kwargs):
         """ predict output class """
-        _, predictions = torch.max(self.predict_proba(inputs), 1)
+        _, predictions = torch.max(self.forward(inputs, *args, **kwargs), 1)
         return predictions
 
 

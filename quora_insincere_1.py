@@ -409,9 +409,10 @@ class RecurrentNN(nn.Module):
 
 class AverageEnsemble(nn.Module):
 
-    def __init__(self, models: List[nn.Module]) -> None:
+    def __init__(self, models: List[nn.Module], padding_idx: int = 0) -> None:
         super().__init__()
         self.models = models
+        self.padding_idx = padding_idx
 
     def forward(self, inputs, *args, **kwargs) -> torch.tensor:
         outputs = [model(inputs, *args, **kwargs) for model in self.models]
@@ -650,6 +651,8 @@ def train(
     """
     X_train, X_test = torch.from_numpy(X_train), torch.from_numpy(X_test)
     y_train, y_test = torch.from_numpy(y_train), torch.from_numpy(y_test)
+    X_train_len = (X_train != model.padding_idx).sum(dim=1)
+    X_test_len = (X_test != model.padding_idx).sum(dim=1)
     scores = []
     iter = 0
     best_model_sd = None
@@ -659,12 +662,14 @@ def train(
     model.to(device)
     logger.info("Start training...")
     for epoch in range(num_epochs):
-        X_train, y_train = unison_shuffled_copies(X_train, y_train)
+        X_train, X_train_len, y_train = unison_shuffled_copies(
+            X_train, X_train_len, y_train)
         for offset in range(0, len(X_train), batch_size):
             inputs = X_train[offset: offset+batch_size].to(device)
+            lengths = X_train_len[offset: offset+batch_size]
             targets = y_train[offset: offset+batch_size].to(device)
             optimizer.zero_grad()
-            outputs = model(inputs)
+            outputs = model(inputs, lengths)
             loss = criterion(outputs, targets)
             loss.backward()
             if clip_grad_norm:
@@ -679,7 +684,7 @@ def train(
                 logger.debug(
                     f"iter: {iter}, loss: {loss.item():.3f}")
         logger.debug(f"evaluate {metric} on: {Counter(y_test.tolist())}")
-        score = evaluate(X_test, y_test, model, metric)
+        score = evaluate(X_test, y_test, model, metric, batch_size, X_test_len)
         if scores and score > max(scores):
             best_model_sd = copy.deepcopy(model.state_dict())
         scores.append(score)
@@ -695,27 +700,31 @@ def train(
     return scores
 
 
-def evaluate(inputs, targets, model, metric, batch_size=1000):
+def evaluate(inputs, targets, model, metric, batch_size=1000, lengths=None):
     """ compute predictions for inputs and evaluate w.r.t to targets """
-    predictions = predict(inputs, model, batch_size)
+    predictions = predict(inputs, model, batch_size, lengths)
     if metric == 'f1_score':
         return f1_score(targets, predictions)
     else:
         raise Exception(f"unknown metric {metric}")
 
 
-def predict(inputs, model, batch_size=1000):
+def predict(inputs, model, batch_size=1000, lengths=None):
     """ predict classes given inputs and model, used to process by batch if
         large number of inputs
     """
+    if lengths is None:
+        lengths = (inputs != model.padding_idx).sum(dim=1)
     is_training = model.training
     if is_training:
         model.eval()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     predictions = []
-    for input_batch in batchify(inputs, batch_size):
-        input_batch = input_batch.to(device)
-        predictions.extend(model.predict(input_batch).cpu().numpy())
+    for offset in range(0, len(inputs), batch_size):
+        input_batch = inputs[offset:offset+batch_size].to(device)
+        length_batch = lengths[offset:offset+batch_size]
+        prediction_batch = model.predict(input_batch, length_batch)
+        predictions.extend(prediction_batch.cpu().numpy())
     if is_training:  # set back to training mode
         model.train()
     return predictions
@@ -768,11 +777,13 @@ def downsample(data, downsample_ratio=None, max_imbalance_ratio=None):
     return data
 
 
-def unison_shuffled_copies(a, b):
-    """ shuffle two numpy array keeping the alignment between them """
-    assert len(a) == len(b)
-    p = np.random.permutation(len(a))
-    return a[p], b[p]
+def unison_shuffled_copies(*arrays):
+    """ shuffle numpy arrays keeping the alignment between them """
+    if not arrays:
+        return arrays
+    assert all(len(a) == len(arrays[0]) for a in arrays)
+    p = np.random.permutation(len(arrays[0]))
+    return (a[p] for a in arrays)
 
 
 def build_vocab(data, vocab_size=0):

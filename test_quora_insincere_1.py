@@ -1,12 +1,13 @@
 import unittest
 from quora_insincere_1 import (
     FeedForwardNN, RecurrentNN, AverageEnsemble, train, load_embeddings,
-    get_data_dir, evaluate)
+    get_data_dir, evaluate, main, get_saved_best_params)
 import numpy as np
 import torch.nn as nn
 import os
 import torch.optim as optim
 import torch
+from unittest.mock import patch
 
 
 def generate_dummy_dataset(dataset_size, vocab, max_seq_len, padding_idx=0):
@@ -108,6 +109,29 @@ class TestModels(unittest.TestCase):
         X, y = torch.from_numpy(self.X_train), torch.from_numpy(self.y_train)
         score = evaluate(X, y, ensemble_model, 'f1_score')
         self.assertTrue(score > .8)
+
+
+class TestPipeline(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.submission_file = 'submission.csv'
+
+    def setUp(self):
+        if os.path.exists(self.submission_file):
+            os.remove(self.submission_file)
+
+    def test_pipeline_submit(self):
+        best_params = get_saved_best_params()
+        with patch('quora_insincere_1.get_saved_best_params') as mock_params:
+            mock_params.return_value = best_params
+            mock_params.return_value.update({
+                'downsample': .001,
+                'num_epochs': 20,
+                'embeddings_top_n': 1000
+            })
+            main()
+        self.assertTrue(os.path.isfile(self.submission_file))
 
 
 if __name__ == '__name__':

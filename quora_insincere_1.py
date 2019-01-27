@@ -882,8 +882,8 @@ def get_params_space():
     return PARAMS_SPACE
 
 
-if __name__ == '__main__':
-    SUBMIT = True
+def main(num_samples=0):
+    SUBMIT = not num_samples
     PARAMS_SPACE = get_params_space()
     best_params = get_saved_best_params()
     if SUBMIT:
@@ -891,7 +891,6 @@ if __name__ == '__main__':
     set_seeds(PARAMS_SPACE['seed'])
     logger.info(f"SEED: {PARAMS_SPACE['seed']}")
     logger.info(f"torch.initial_seed(): {torch.initial_seed()}")
-    NUM_SAMPLES = 20
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"Use device {device}")
     data_dir = get_data_dir()
@@ -920,7 +919,7 @@ if __name__ == '__main__':
         params_score = {}
         run_random_search(
             X_train, y_train, weights, PARAMS_SPACE, params_score,
-            NUM_SAMPLES, PARAMS_SPACE['train_ratio'],
+            num_samples, PARAMS_SPACE['train_ratio'],
             PARAMS_SPACE['num_folds'])
         best_params, score = get_best_params(params_score)
         model, scores = train_for_params(
@@ -938,3 +937,7 @@ if __name__ == '__main__':
         X_test = torch.from_numpy(X_test)
         test_data['prediction'] = predict(X_test, model)
         test_data[['qid', 'prediction']].to_csv('submission.csv', index=False)
+
+
+if __name__ == '__main__':
+    main(0)

@@ -290,7 +290,7 @@ class RecurrentNN(nn.Module):
             self, input_size, num_classes, weights, trainable_emb=False,
             hidden_dim_rnn=50, num_layers_rnn=1, unit_type='LSTM', dropout=0.,
             padding_idx=0, bidirectional=True, maxpooling=True,
-            hidden_linear1=None):
+            hidden_linear1=None, rnn_activation='relu'):
         """ unit_type: 'LSTM' or 'GRU'
             if hidden_linear1 is not None, dim of hidden linear layer, else no
                 hidden linear layer
@@ -330,6 +330,7 @@ class RecurrentNN(nn.Module):
             # variable length inputs
             self.max_pool = nn.AdaptiveMaxPool1d(1)
         self.activation = F.log_softmax
+        self.rnn_activation = get_activation(rnn_activation)
 
     def _init_embeddings(self):
         num_emb, emb_size = self.weights.shape
@@ -374,6 +375,7 @@ class RecurrentNN(nn.Module):
         # note that dropout argument of RNN layer applies dropout on all but
         # the last layer, so it is not applied if num_layers_rnn = 1
         out = self.dropout(out)
+        out = self.rnn_activation(out)
         out = self.linear1(out)
         if self.linear2:
             out = self.linear2(out)
@@ -747,6 +749,15 @@ def weight_reset(m):
     """
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
         m.reset_parameters()
+
+
+def get_activation(activation):
+    if activation == 'relu':
+        return F.relu
+    elif activation == 'log_softmax':
+        return F.log_softmax
+    else:
+        raise ValueError(f"Unknown activation {activation}")
 
 
 def downsample(data, downsample_ratio=None, max_imbalance_ratio=None):

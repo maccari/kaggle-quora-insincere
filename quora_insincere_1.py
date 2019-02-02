@@ -230,7 +230,8 @@ class FeedForwardNN(nn.Module):
 
     def __init__(
             self, input_size, num_classes, weights, trainable_emb=False,
-            hidden1=None, padding_idx=0, emb_agg='mean'):
+            hidden1=None, padding_idx=0, emb_agg='mean',
+            activation='log_softmax'):
         """ weights: weights of pretrained embeddings
             if hidden1 is None, does not add hidden layer
             emb_agg: embedding aggregation method, 'sum' or 'mean'
@@ -247,7 +248,7 @@ class FeedForwardNN(nn.Module):
         else:
             self.input1 = nn.Linear(input_size, num_classes)
             self.hidden1 = None
-        self.activation = F.log_softmax
+        self.activation = get_activation(activation)
 
     def _init_embeddings(self):
         num_emb, emb_size = self.weights.shape
@@ -266,9 +267,10 @@ class FeedForwardNN(nn.Module):
                 inputs_lengths = (inputs != self.padding_idx).sum(dim=1)
             inputs_lengths = inputs_lengths.to(torch.float).view(-1, 1)
             agg_embed1 /= inputs_lengths
-        out = self.activation(self.input1(agg_embed1), dim=1)
+        out = self.input1(agg_embed1)
         if self.hidden1:
-            out = self.activation(self.hidden1(out), dim=1)
+            out = self.activation(out, dim=1)
+            out = self.hidden1(out)
         return out
 
     def predict(self, inputs, lengths=None):
@@ -290,7 +292,8 @@ class RecurrentNN(nn.Module):
             self, input_size, num_classes, weights, trainable_emb=False,
             hidden_dim_rnn=50, num_layers_rnn=1, unit_type='LSTM', dropout=0.,
             padding_idx=0, bidirectional=True, maxpooling=True,
-            hidden_linear1=None, rnn_activation='relu'):
+            hidden_linear1=None, rnn_activation='relu',
+            linear_activation='log_softmax'):
         """ unit_type: 'LSTM' or 'GRU'
             if hidden_linear1 is not None, dim of hidden linear layer, else no
                 hidden linear layer
@@ -329,8 +332,8 @@ class RecurrentNN(nn.Module):
             # size (== max_seq_len batch) which is different for since we have
             # variable length inputs
             self.max_pool = nn.AdaptiveMaxPool1d(1)
-        self.activation = F.log_softmax
         self.rnn_activation = get_activation(rnn_activation)
+        self.linear_activation = get_activation(linear_activation)
 
     def _init_embeddings(self):
         num_emb, emb_size = self.weights.shape
@@ -378,8 +381,7 @@ class RecurrentNN(nn.Module):
         out = self.rnn_activation(out)
         out = self.linear1(out)
         if self.linear2:
-            out = self.linear2(out)
-        out = self.activation(out, dim=1)
+            out = self.linear2(self.linear_activation(out, dim=1))
         return out
 
     def predict(self, inputs, lengths=None):

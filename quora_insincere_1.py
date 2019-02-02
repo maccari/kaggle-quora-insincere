@@ -103,8 +103,9 @@ def load_data(data_dir, use_saved=False, shuffle=True):
 
 
 def load_embeddings(
-        data_dir, model, top_n=0, vocab_filter=None, oov_vocab=None,
-        padding_token='_PAD_', oov_token='_OOV_', lower=False):
+        data_dir, models, top_n=0, vocab_filter=None, oov_vocab=None,
+        padding_token='_PAD_', oov_token='_OOV_', lower=False,
+        agg_method='mean'):
     """ load embedding model in memory
         if top_n > 0, load the first top_n embeddings in file
         if vocab_filter, load only tokens in vocab_filter
@@ -114,47 +115,104 @@ def load_embeddings(
         oov_token has idx 1
         if lower, if a word is non-lower and has no lower version, use it as
             lower version
+        if len(models) > 1, use agg_method to aggregate embeddings, either
+            with 'mean' or 'concat'
     """
     logger.info("load embeddings")
-    vocab = {padding_token: 0, oov_token: 1}
-    weights = [None, None]
-    with open(os.path.join(data_dir, model)) as ifs:
+    if not models:
+        raise ValueError("Provide at least one model")
+    vocab = {mi: {padding_token: 0, oov_token: 1} for mi in range(len(models))}
+    weights = {mi: [None, None] for mi in range(len(models))}
+    for mi, model in enumerate(models):
+        logger.info(f"Loading embedding model {model}")
+        embeddings = read_embedding_file(
+            data_dir, model, top_n, vocab_filter, lower)
+        for word, original_word, vector in embeddings:
+            if word in vocab[mi]:
+                if lower and original_word.islower():
+                    # previous encounter was not lower, replace with current
+                    # encouter
+                    weights[mi][vocab[mi][word]] = vector
+            else:
+                vocab[mi][word] = len(vocab[mi])
+                weights[mi].append(vector)
+        if len(weights[mi]) <= 2:
+            raise ValueError("No weight loaded")
+        if vocab_filter:
+            logger.info(
+                f"Found {len(vocab[mi])}/{len(vocab_filter)} tokens in model")
+        emb_size = len(weights[mi][2])
+        weights[mi][vocab[mi][padding_token]] = [0.] * emb_size
+        weights[mi][vocab[mi][oov_token]] = [0.] * emb_size
+        mean_weight = np.mean(weights[mi], axis=0)
+        weights[mi][vocab[mi][oov_token]] = mean_weight
+        if oov_vocab:
+            oov_to_add = oov_vocab - set(vocab[mi])
+            logger.info(f"Add {len(oov_to_add)} oov tokens")
+            for token in oov_to_add:
+                vocab[mi][token] = len(vocab[mi])
+                weights[mi].append(mean_weight)
+        weights[mi] = np.array(weights[mi])
+    vocab, weights = aggregate_embeddings(vocab, weights, agg_method)
+    return weights, vocab
+
+
+def read_embedding_file(
+        data_dir: str, model: str, top_n: int = 0,
+        vocab_filter: set = None, lower: bool = False
+        ) -> Iterator[Tuple[str, List[float]]]:
+    """ Read embedding file for different embedding models """
+    errors = None
+    if model == 'paragram_300_sl999/paragram_300_sl999.txt':
+        errors = 'ignore'
+    with open(os.path.join(data_dir, model), errors=errors) as ifs:
         for idx, line in enumerate(ifs):
+            if idx == 0 and model == 'wiki-news-300d-1M/wiki-news-300d-1M.vec':
+                continue  # skip header
             if idx % 10000 == 0:
                 logger.debug(idx)
             if top_n and idx >= top_n:
                 break
             line = line.rstrip('\n').split(' ')
-            word, vector = line[0], list(map(float, line[1:]))
+            word = line[0]
             original_word = word
             if lower:
                 word = word.lower()
             if vocab_filter and word not in vocab_filter:
                 continue
-            if word in vocab:
-                if lower and original_word.islower():
-                    # previous encounter was not lower, replace with current
-                    weights[vocab[word]] = vector
-            else:
-                vocab[word] = len(vocab)
-                weights.append(vector)
-    if len(weights) <= 2:
-        raise ValueError("No weight loaded")
-    if vocab_filter:
-        logger.info(f"Found {len(vocab)}/{len(vocab_filter)} tokens in model")
-    emb_size = len(weights[2])
-    weights[vocab[padding_token]] = [0.] * emb_size
-    weights[vocab[oov_token]] = [0.] * emb_size
-    mean_weight = np.mean(weights, axis=0)
-    weights[vocab[oov_token]] = mean_weight
-    if oov_vocab:
-        oov_to_add = oov_vocab - set(vocab)
-        logger.info(f"Add {len(oov_to_add)} oov tokens")
-        for token in oov_to_add:
-            vocab[token] = len(vocab)
-            weights.append(mean_weight)
-    weights = np.array(weights)
-    return weights, vocab
+            vector = list(map(float, line[1:]))
+            yield word, original_word, vector
+
+
+def aggregate_embeddings(
+        vocab: Dict[int, Dict[str, int]], weights: Dict[int, np.ndarray],
+        agg_method: str = 'mean'
+        ) -> Tuple[Dict[str, int], Dict[int, np.ndarray]]:
+    agg_vocab = {}
+    for mvocab in vocab.values():
+        for word in mvocab:
+            if word not in agg_vocab:
+                agg_vocab[word] = len(agg_vocab)
+    num_models = len(vocab)
+    vocab_size = len(agg_vocab)
+    emb_size = len(weights[0][0])
+    if agg_method == 'mean':
+        agg_weights = np.empty((vocab_size, emb_size))
+        for mi in range(num_models):
+            mvocab, mweights = vocab[mi], weights[mi]
+            for word in mvocab:
+                agg_weights[agg_vocab[word]] += mweights[mvocab[word]]
+        agg_weights /= num_models
+    elif agg_method == 'concat':
+        agg_weights = np.zeros((vocab_size, num_models*emb_size))
+        for mi in range(num_models):
+            mvocab, mweights = vocab[mi], weights[mi]
+            for word in mvocab:
+                s, e = mi*emb_size, (mi+1)*emb_size
+                agg_weights[agg_vocab[word]][s:e] = mweights[mvocab[word]]
+    else:
+        raise ValueError(f"Unknown aggregation method {agg_method}")
+    return agg_vocab, agg_weights
 
 
 def get_top_terms(data):
@@ -819,7 +877,11 @@ def get_saved_best_params():
         'criterion': 'CrossEntropyLoss',
         'downsample': 1.0,
         'dropout': 0.0,
-        'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
+        'embedding_models': (
+            'glove.840B.300d/glove.840B.300d.txt',
+            'paragram_300_sl999/paragram_300_sl999.txt',
+            'wiki-news-300d-1M/wiki-news-300d-1M.vec'
+        ),
         'unit_type': 'GRU',
         'hidden_dim_rnn': 200,
         'hidden_linear1': 200,
@@ -841,6 +903,7 @@ def get_saved_best_params():
         'trainable_emb': True,
         'weight_decay': 1e-06,
         'vocab_size': 50000,
+        'emb_agg_method': 'concat',
         'embeddings_top_n': 0,
         'clip_grad_norm': 0.25,
     }
@@ -854,9 +917,14 @@ def get_params_space():
         'downsample': 1.,  # None, 0 or 1 to ignore
         'max_imbalance_ratio': 0.,
         'max_seq_len': 50,
-        'embedding_model': 'glove.840B.300d/glove.840B.300d.txt',
+        'embedding_models': (
+            'glove.840B.300d/glove.840B.300d.txt',
+            'paragram_300_sl999/paragram_300_sl999.txt',
+            'wiki-news-300d-1M/wiki-news-300d-1M.vec'
+        ),
         'vocab_size': 50000,
         'embeddings_top_n': 0,
+        'emb_agg_method': 'concat',
         'spacy_model': 'en_core_web_sm',
         'batch_size': [2**i for i in range(8, 12)],
         'weight_decay': [10**i for i in range(-6, -4)],
@@ -919,9 +987,10 @@ def main(num_samples=0):
     preprocess_data(test_data, tokenizer, PARAMS_SPACE['lower'])
     train_vocab = build_vocab(train_data, PARAMS_SPACE['vocab_size'])
     weights, vocab = load_embeddings(
-        embed_dir, model=PARAMS_SPACE['embedding_model'],
+        embed_dir, models=PARAMS_SPACE['embedding_models'],
         vocab_filter=train_vocab, oov_vocab=train_vocab,
-        lower=PARAMS_SPACE['lower'], top_n=PARAMS_SPACE['embeddings_top_n'])
+        lower=PARAMS_SPACE['lower'], top_n=PARAMS_SPACE['embeddings_top_n'],
+        agg_method=PARAMS_SPACE['emb_agg_method'])
     logger.info(f"Vocab size: {len(vocab)}")
     emb_size = weights.shape[1]
     num_classes = len(set(train_data['target']))

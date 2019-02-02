@@ -41,7 +41,7 @@ class TestModels(unittest.TestCase):
         embed_dir = os.path.join(data_dir, 'embeddings/')
         model_path = 'glove.840B.300d/glove.840B.300d.txt'
         cls.weights, cls.vocab = load_embeddings(
-            embed_dir, model=model_path, top_n=1000)
+            embed_dir, models=[model_path], top_n=1000)
         cls.emb_size = cls.weights.shape[1]
         cls.X_train, cls.y_train = generate_dummy_dataset(
             dataset_size=10000, vocab=set(cls.vocab.values()), max_seq_len=50)

@@ -294,6 +294,8 @@ class FeedForwardNN(nn.Module):
             emb_agg: embedding aggregation method, 'sum' or 'mean'
         """
         super().__init__()
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = device
         self.weights = weights
         self.trainable_emb = trainable_emb
         self.padding_idx = padding_idx
@@ -322,6 +324,7 @@ class FeedForwardNN(nn.Module):
         if self.emb_agg == 'mean':
             if inputs_lengths is None:
                 inputs_lengths = (inputs != self.padding_idx).sum(dim=1)
+                inputs_lengths = inputs_lengths.to(self.device)
             inputs_lengths = inputs_lengths.to(torch.float).view(-1, 1)
             agg_embed1 /= inputs_lengths
         out = self.input1(agg_embed1)
@@ -349,13 +352,15 @@ class RecurrentNN(nn.Module):
             self, input_size, num_classes, weights, trainable_emb=False,
             hidden_dim_rnn=50, num_layers_rnn=1, unit_type='LSTM', dropout=0.,
             padding_idx=0, bidirectional=True, maxpooling=True,
-            hidden_linear1=None, rnn_activation='relu',
+            avgpooling=True, hidden_linear1=None, rnn_activation='relu',
             linear_activation='log_softmax'):
         """ unit_type: 'LSTM' or 'GRU'
             if hidden_linear1 is not None, dim of hidden linear layer, else no
                 hidden linear layer
         """
         super().__init__()
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = device
         self.input_size = input_size
         self.weights = weights
         self.trainable_emb = trainable_emb
@@ -363,9 +368,13 @@ class RecurrentNN(nn.Module):
         self.num_layers_rnn = num_layers_rnn
         self.bidirectional = bidirectional
         self.maxpooling = maxpooling
+        self.avgpooling = avgpooling
         self.unit_type = unit_type
         self.padding_idx = padding_idx
         self.out_rnn_dim = self.hidden_dim_rnn * (1+self.bidirectional)
+        if self.maxpooling and self.avgpooling:
+            # concat maxpooling and avgpooling
+            self.out_rnn_dim *= 2
         self._init_embeddings()
         if unit_type == 'LSTM':
             self.rnn = nn.LSTM(
@@ -384,11 +393,6 @@ class RecurrentNN(nn.Module):
         else:
             self.linear1 = nn.Linear(self.out_rnn_dim, num_classes)
             self.linear2 = None
-        if self.maxpooling:
-            # as opposed to MaxPool1D, AdaptiveMaxPool1d does not need kernel
-            # size (== max_seq_len batch) which is different for since we have
-            # variable length inputs
-            self.max_pool = nn.AdaptiveMaxPool1d(1)
         self.rnn_activation = get_activation(rnn_activation)
         self.linear_activation = get_activation(linear_activation)
 
@@ -405,6 +409,7 @@ class RecurrentNN(nn.Module):
         embed1 = self.embed1(inputs)
         if inputs_lengths is None:
             inputs_lengths = (inputs != self.padding_idx).sum(dim=1)
+            inputs_lengths = inputs_lengths.to(self.device)
         # reset state at beginning of each batch
         self.hidden_rnn = self._init_hidden(len(embed1))
         # sort by length for pack_padded_sequence
@@ -416,11 +421,24 @@ class RecurrentNN(nn.Module):
         rnn_out, self.hidden_rnn = self.rnn(packed_embed1, self.hidden_rnn)
         # unpack sequences out of rnn
         unpacked_rnn_out, _ = pad_packed_sequence(rnn_out, batch_first=True)
+        # unpacked_rnn_out: [batch_size, max(input_lengths), 2*hidden_dim_rnn]
         # put back in original order (necessary to compare to targets)
         _, unsort_idx = sort_idx.sort(0)
-        if self.maxpooling:
+        if self.maxpooling or self.avgpooling:
             unpacked_rnn_out = unpacked_rnn_out[unsort_idx]
-            out = self.max_pool(unpacked_rnn_out.permute(0, 2, 1)).squeeze(2)
+        if self.maxpooling and self.avgpooling:
+            # concat maxpooling and avgpooling
+            outmax, _ = torch.max(unpacked_rnn_out, dim=1)
+            outavg = torch.sum(unpacked_rnn_out, dim=1)
+            outavg /= inputs_lengths.float().view(-1, 1)
+            out = torch.cat((outmax, outavg), dim=1)
+        elif self.maxpooling:
+            out, _ = torch.max(unpacked_rnn_out, dim=1)
+        elif self.avgpooling:
+            # use sum / input_length instead of mean because padding should
+            # not contribute
+            out = torch.sum(unpacked_rnn_out, dim=1)
+            out /= inputs_lengths.float().view(-1, 1)
         else:
             # get the last timestep of each element
             # seems to be different than self.hidden[0]
@@ -727,7 +745,7 @@ def train(
             X_train, X_train_len, y_train)
         for offset in range(0, len(X_train), batch_size):
             inputs = X_train[offset: offset+batch_size].to(device)
-            lengths = X_train_len[offset: offset+batch_size]
+            lengths = X_train_len[offset: offset+batch_size].to(device)
             targets = y_train[offset: offset+batch_size].to(device)
             optimizer.zero_grad()
             outputs = model(inputs, lengths)
@@ -783,7 +801,7 @@ def predict(inputs, model, batch_size=1000, lengths=None):
     predictions = []
     for offset in range(0, len(inputs), batch_size):
         input_batch = inputs[offset:offset+batch_size].to(device)
-        length_batch = lengths[offset:offset+batch_size]
+        length_batch = lengths[offset:offset+batch_size].to(device)
         prediction_batch = model.predict(input_batch, length_batch)
         predictions.extend(prediction_batch.cpu().numpy())
     if is_training:  # set back to training mode

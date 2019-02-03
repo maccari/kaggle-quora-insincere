@@ -83,9 +83,10 @@ class TestModels(unittest.TestCase):
         self.assertTrue(max(scores, default=0.) > .8)
 
     def test_bilstmmaxpool_overfit_training_data(self):
-        """ Test bilstm with maxpooling can learn """
+        """ Test bilstm with maxpooling and avgpooling can learn """
         self.model = RecurrentNN(
-            self.emb_size, self.num_classes, self.weights, hidden_dim_rnn=80)
+            self.emb_size, self.num_classes, self.weights, hidden_dim_rnn=80,
+            maxpooling=True, avgpooling=True)
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = optim.SGD(self.model.parameters(), lr=.005)
         scores = self._train()

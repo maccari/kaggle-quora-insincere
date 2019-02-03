@@ -4,7 +4,6 @@ import os
 import logging
 from collections import Counter
 import spacy
-from spacy.tokenizer import Tokenizer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -981,10 +980,10 @@ def main(num_samples=0):
     train_data = downsample(
         train_data, PARAMS_SPACE['downsample'],
         PARAMS_SPACE['max_imbalance_ratio'])
-    nlp = spacy.load(PARAMS_SPACE['spacy_model'])
-    tokenizer = Tokenizer(nlp.vocab)
-    preprocess_data(train_data, tokenizer, PARAMS_SPACE['lower'])
-    preprocess_data(test_data, tokenizer, PARAMS_SPACE['lower'])
+    nlp = spacy.load(
+        PARAMS_SPACE['spacy_model'], disable=['tagger', 'parser', 'ner'])
+    preprocess_data(train_data, nlp, PARAMS_SPACE['lower'])
+    preprocess_data(test_data, nlp, PARAMS_SPACE['lower'])
     train_vocab = build_vocab(train_data, PARAMS_SPACE['vocab_size'])
     weights, vocab = load_embeddings(
         embed_dir, models=PARAMS_SPACE['embedding_models'],

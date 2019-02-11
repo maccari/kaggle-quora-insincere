@@ -223,11 +223,12 @@ def get_top_terms(data):
     return top_terms
 
 
-def preprocess_data(data, tokenizer, lower=False):
+def preprocess_data(data, tokenizer, lower=False, lemma=False):
     """ preprocess dataset: tokenize text, optionally lowercase
     """
     logger.info(f"preprocess data (lower={lower})")
-    tokenize = partial(_tokenize, tokenizer=tokenizer, lower=lower)
+    tokenize = partial(
+        _tokenize, tokenizer=tokenizer, lower=lower, lemma=lemma)
     tokenized = []
     for index, row in data.iterrows():
         if index % 100000 == 0:
@@ -236,10 +237,10 @@ def preprocess_data(data, tokenizer, lower=False):
     data['tokenized'] = tokenized
 
 
-def _tokenize(string, tokenizer, lower=False):
+def _tokenize(string, tokenizer, lower=False, lemma=False):
     """ tokenize, optionally lowercase """
     tokenized = tokenizer(string)
-    tokens = [token.text for token in tokenized]
+    tokens = [token.lemma_ if lemma else token.text for token in tokenized]
     if lower:
         tokens = [token.lower() for token in tokens]
     return tokens
@@ -992,6 +993,7 @@ def get_saved_best_params():
         'learning_rate': 0.0008,
         'loss_weight': (1.0, 2.0),
         'lower': True,
+        'lemma': False,
         'max_imbalance_ratio': 0.0,
         'max_seq_len': 50,
         'min_improvement': 0.01,
@@ -1019,6 +1021,7 @@ def get_params_space():
     PARAMS_SPACE = {
         'seed': np.random.randint(1E9),
         'lower': True,
+        'lemma': False,
         'downsample': 1.,  # None, 0 or 1 to ignore
         'max_imbalance_ratio': 0.,
         'max_seq_len': 50,
@@ -1089,8 +1092,10 @@ def main(num_samples=0):
         PARAMS_SPACE['max_imbalance_ratio'])
     nlp = spacy.load(
         PARAMS_SPACE['spacy_model'], disable=['tagger', 'parser', 'ner'])
-    preprocess_data(train_data, nlp, PARAMS_SPACE['lower'])
-    preprocess_data(test_data, nlp, PARAMS_SPACE['lower'])
+    preprocess_data(
+        train_data, nlp, PARAMS_SPACE['lower'], PARAMS_SPACE['lemma'])
+    preprocess_data(
+        test_data, nlp, PARAMS_SPACE['lower'], PARAMS_SPACE['lemma'])
     train_vocab = build_vocab(train_data, PARAMS_SPACE['vocab_size'])
     weights, vocab = load_embeddings(
         embed_dir, models=PARAMS_SPACE['embedding_models'],

@@ -320,7 +320,7 @@ class FeedForwardNN(nn.Module):
             _weight=torch.from_numpy(self.weights)).float()
         self.embed1.weight.requires_grad = self.trainable_emb
 
-    def forward(self, inputs, inputs_lengths=None):
+    def forward(self, inputs, inputs_lengths=None, wide_features=None):
         """ forward pass """
         embed1 = self.embed1(inputs)
         agg_embed1 = embed1.sum(dim=1)
@@ -336,9 +336,9 @@ class FeedForwardNN(nn.Module):
             out = self.hidden1(out)
         return out
 
-    def predict(self, inputs, lengths=None):
+    def predict(self, inputs, lengths=None, wide_features=None):
         """ predict output class """
-        out = self.predict_proba(inputs, lengths)
+        out = self.predict_proba(inputs, lengths, wide_features)
         probas, predictions = torch.max(out, 1)
         if self.threshold is not None:
             default_preds = torch.ones(len(predictions)) * self.default_class
@@ -347,9 +347,9 @@ class FeedForwardNN(nn.Module):
                 probas > self.threshold, predictions, default_preds)
         return predictions
 
-    def predict_proba(self, inputs, lengths=None):
+    def predict_proba(self, inputs, lengths=None, wide_features=None):
         """ predict proba per class """
-        return F.softmax(self.forward(inputs, lengths), dim=1)
+        return F.softmax(self.forward(inputs, lengths, wide_features), dim=1)
 
     def set_threshold(self, threshold, default_class=0):
         self.threshold = threshold
@@ -370,7 +370,7 @@ class RecurrentNN(nn.Module):
             hidden_dim_rnn=50, num_layers_rnn=1, unit_type='LSTM', dropout=0.,
             padding_idx=0, bidirectional=True, maxpooling=True,
             avgpooling=True, hidden_linear1=None, rnn_activation='relu',
-            linear_activation='log_softmax'):
+            linear_activation='log_softmax', wide_dim=0):
         """ unit_type: 'LSTM' or 'GRU'
             if hidden_linear1 is not None, dim of hidden linear layer, else no
                 hidden linear layer
@@ -408,9 +408,9 @@ class RecurrentNN(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         if hidden_linear1:
             self.linear1 = nn.Linear(self.out_rnn_dim, hidden_linear1)
-            self.linear2 = nn.Linear(hidden_linear1, num_classes)
+            self.linear2 = nn.Linear(hidden_linear1 + wide_dim, num_classes)
         else:
-            self.linear1 = nn.Linear(self.out_rnn_dim, num_classes)
+            self.linear1 = nn.Linear(self.out_rnn_dim + wide_dim, num_classes)
             self.linear2 = None
         self.rnn_activation = get_activation(rnn_activation)
         self.linear_activation = get_activation(linear_activation)
@@ -423,7 +423,7 @@ class RecurrentNN(nn.Module):
             _weight=torch.from_numpy(self.weights)).float()
         self.embed1.weight.requires_grad = self.trainable_emb
 
-    def forward(self, inputs, inputs_lengths=None):
+    def forward(self, inputs, inputs_lengths=None, wide_features=None):
         """ forward pass """
         embed1 = self.embed1(inputs)
         if inputs_lengths is None:
@@ -473,14 +473,19 @@ class RecurrentNN(nn.Module):
         # the last layer, so it is not applied if num_layers_rnn = 1
         out = self.dropout(out)
         out = self.rnn_activation(out)
+        if (wide_features is not None and len(wide_features)
+                and not self.linear2):
+            out = torch.cat((out, wide_features), dim=1)
         out = self.linear1(out)
         if self.linear2:
+            if wide_features is not None and len(wide_features):
+                out = torch.cat((out, wide_features), dim=1)
             out = self.linear2(self.linear_activation(out, dim=1))
         return out
 
-    def predict(self, inputs, lengths=None):
+    def predict(self, inputs, lengths=None, wide_features=None):
         """ predict output class """
-        out = self.predict_proba(inputs, lengths)
+        out = self.predict_proba(inputs, lengths, wide_features)
         probas, predictions = torch.max(out, 1)
         if self.threshold is not None:
             default_preds = torch.ones(len(predictions)) * self.default_class
@@ -489,9 +494,9 @@ class RecurrentNN(nn.Module):
                 probas > self.threshold, predictions, default_preds)
         return predictions
 
-    def predict_proba(self, inputs, lengths=None):
+    def predict_proba(self, inputs, lengths=None, wide_features=None):
         """ predict proba per class """
-        return F.softmax(self.forward(inputs, lengths), dim=1)
+        return F.softmax(self.forward(inputs, lengths, wide_features), dim=1)
 
     def set_threshold(self, threshold, default_class=0):
         self.threshold = threshold
@@ -575,7 +580,7 @@ def _dict2sortedtuple(d):
 
 def run_random_search(
         X, y, weights, params_space, params_score, num_samples,
-        train_ratio=0.8, num_folds=None):
+        train_ratio=0.8, num_folds=None, wide_features=None):
     """ perform random search
         if num_folds is not None, train_ratio is ignored
         fill params_score dictionary with params -> scores
@@ -589,7 +594,7 @@ def run_random_search(
             continue
         logger.info(f"drawn params: {params}")
         model, scores = train_for_params(
-            X, y, weights, params, train_ratio, num_folds)
+            X, y, weights, params, train_ratio, num_folds, wide_features)
         params_score[tuple_params] = scores
         score = get_params_score(scores, params['num_folds'] is not None)
         logger.info(f"Max score for params: {score}")
@@ -629,16 +634,19 @@ def get_params_score(scores: list, cv: bool = False) -> float:
     return score
 
 
-def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
+def train_for_params(
+        X, y, weights, params, train_ratio=0.8, num_folds=None,
+        wide_features=None):
     """ train classifier for given parameters
     """
     classes = sorted(set(y))
+    wide_dim = wide_features.shape[1] if wide_features is not None else 0
 
     def model_factory():
         """ instantiate a new model
             useful e.g when using cross validation to create one model per fold
         """
-        return build_model_from_params(params, len(classes), weights)
+        return build_model_from_params(params, len(classes), weights, wide_dim)
 
     def criterion_factory():
         return build_criterion_from_params(params, classes, y)
@@ -656,7 +664,8 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
             patience=params['patience'],
             min_improvement=params['min_improvement'],
             clip_grad_norm=params.get('clip_grad_norm', .0),
-            tune_threshold=params['tune_threshold'])
+            tune_threshold=params['tune_threshold'],
+            wide_features=wide_features)
         if params['ensemble_method'] == 'avg':
             model = AverageEnsemble(models)
         else:
@@ -667,13 +676,18 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
         train_index, test_index = next(sss.split(X, y))
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y[train_index], y[test_index]
+        wf_train, wf_test = None, None
+        if wide_features is not None:
+            wf_train = wide_features[train_index]
+            wf_test = wide_features[test_index]
         scores = train(
             X_train, X_test, y_train, y_test, model, criterion, optimizer,
             num_epochs=params['num_epochs'], batch_size=params['batch_size'],
             patience=params['patience'],
             min_improvement=params['min_improvement'],
             clip_grad_norm=params.get('clip_grad_norm', .0),
-            tune_threshold=params['tune_threshold'])
+            tune_threshold=params['tune_threshold'], wf_train=wf_train,
+            wf_test=wf_test)
     else:
         scores = train(
             X, X, y, y, model, criterion, optimizer,
@@ -681,11 +695,12 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
             patience=params['patience'],
             min_improvement=params['min_improvement'],
             clip_grad_norm=params.get('clip_grad_norm', .0),
-            tune_threshold=params['tune_threshold'])
+            tune_threshold=params['tune_threshold'],
+            wf_train=wide_features, wf_test=wide_features)
     return model, scores
 
 
-def build_model_from_params(params, num_classes, weights):
+def build_model_from_params(params, num_classes, weights, wide_dim=0):
     if params['clf_model'] == 'FeedForwardNN':
         model = FeedForwardNN(
             input_size=weights.shape[1], num_classes=num_classes,
@@ -697,7 +712,7 @@ def build_model_from_params(params, num_classes, weights):
             weights=weights, trainable_emb=params['trainable_emb'],
             hidden_dim_rnn=params['hidden_dim_rnn'],
             unit_type=params['unit_type'], dropout=params['dropout'],
-            hidden_linear1=params['hidden_linear1'])
+            hidden_linear1=params['hidden_linear1'], wide_dim=wide_dim)
     else:
         raise ValueError(f"Unknown model {params['clf_model']}")
     logger.info(f"Built model:\n{model}")
@@ -737,10 +752,11 @@ def build_optimizer_from_params(params, model):
 
 
 def _tune_threshold(
-        model, X_test, y_test, X_test_len, metric='f1_score', step_size=.01):
+        model, X_test, y_test, X_test_len, metric='f1_score', step_size=.01,
+        wf_test=None):
     """ return threshold that optimize y_test """
     probas = predict_proba(
-        X_test, model, lengths=X_test_len)
+        X_test, model, lengths=X_test_len, wide_features=wf_test)
     pred_probas, predictions = torch.max(probas, dim=1)
     best_default_class, best_threshold, best_score = 0, 0, 0
     for default_class in range(model.num_classes):
@@ -761,7 +777,8 @@ def _tune_threshold(
 def train_cv(
         X, y, model_factory, criterion_factory, optimizer_factory, num_epochs,
         batch_size, num_folds=5, metric='f1_score', patience=10,
-        min_improvement=0., clip_grad_norm=.0, tune_threshold=False):
+        min_improvement=0., clip_grad_norm=.0, tune_threshold=False,
+        wide_features=None):
     """ train using cross-validation
         return (score per iteration per fold, list of trained models)
     """
@@ -774,10 +791,15 @@ def train_cv(
         logger.info(f"fold index: {fold_idx}")
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y[train_index], y[test_index]
+        train_wide_features, test_wide_features = None, None
+        if wide_features is not None:
+            train_wide_features = wide_features[train_index]
+            test_wide_features = wide_features[test_index]
         fold_scores = train(
             X_train, X_test, y_train, y_test, model, criterion, optimizer,
             num_epochs, batch_size, metric, patience, min_improvement,
-            clip_grad_norm, tune_threshold)
+            clip_grad_norm, tune_threshold, train_wide_features,
+            test_wide_features)
         cv_scores.append(fold_scores)
         models.append(model)
     return cv_scores, models
@@ -786,7 +808,8 @@ def train_cv(
 def train(
         X_train, X_test, y_train, y_test, model, criterion, optimizer,
         num_epochs, batch_size, metric='f1_score', patience=10,
-        min_improvement=0., clip_grad_norm=0., tune_threshold=False):
+        min_improvement=0., clip_grad_norm=0., tune_threshold=False,
+        wf_train=None, wf_test=None):
     """ train model
         return score per iteration
     """
@@ -794,6 +817,10 @@ def train(
     y_train, y_test = torch.from_numpy(y_train), torch.from_numpy(y_test)
     X_train_len = (X_train != model.padding_idx).sum(dim=1)
     X_test_len = (X_test != model.padding_idx).sum(dim=1)
+    wf_train = wf_train if wf_train is not None else np.array([])
+    wf_test = wf_test if wf_test is not None else np.array([])
+    wf_train = torch.from_numpy(wf_train).float()
+    wf_test = torch.from_numpy(wf_test).float()
     scores = []
     iter = 0
     best_model_sd, best_epoch = None, 0
@@ -803,14 +830,24 @@ def train(
     model.to(device)
     logger.info("Start training...")
     for epoch in range(num_epochs):
-        X_train, X_train_len, y_train = unison_shuffled_copies(
-            X_train, X_train_len, y_train)
+        if len(wf_train):
+            arrays = X_train, X_train_len, y_train, wf_train
+        else:
+            arrays = X_train, X_train_len, y_train
+        arrays = unison_shuffled_copies(*arrays)
+        if len(wf_train):
+            X_train, X_train_len, y_train, wf_train = arrays
+        else:
+            X_train, X_train_len, y_train = arrays
         for offset in range(0, len(X_train), batch_size):
             inputs = X_train[offset: offset+batch_size].to(device)
             lengths = X_train_len[offset: offset+batch_size].to(device)
             targets = y_train[offset: offset+batch_size].to(device)
+            wf = None
+            if len(wf_train):
+                wf = wf_train[offset: offset+batch_size].to(device)
             optimizer.zero_grad()
-            outputs = model(inputs, lengths)
+            outputs = model(inputs, lengths, wf)
             loss = criterion(outputs, targets)
             loss.backward()
             if clip_grad_norm:
@@ -825,7 +862,8 @@ def train(
                 logger.debug(
                     f"iter: {iter}, loss: {loss.item():.3f}")
         logger.debug(f"evaluate {metric} on: {Counter(y_test.tolist())}")
-        score = evaluate(X_test, y_test, model, metric, batch_size, X_test_len)
+        score = evaluate(
+            X_test, y_test, model, metric, batch_size, X_test_len, wf_test)
         if scores and score > max(scores):
             best_model_sd = copy.deepcopy(model.state_dict())
             best_epoch = epoch
@@ -850,9 +888,11 @@ def train(
     return scores
 
 
-def evaluate(inputs, targets, model, metric, batch_size=1000, lengths=None):
+def evaluate(
+        inputs, targets, model, metric, batch_size=1000, lengths=None,
+        wide_features=None):
     """ compute predictions for inputs and evaluate w.r.t to targets """
-    predictions = predict(inputs, model, batch_size, lengths)
+    predictions = predict(inputs, model, batch_size, lengths, wide_features)
     return compute_score(targets, predictions, metric)
 
 
@@ -864,7 +904,8 @@ def compute_score(targets, predictions, metric='f1_score'):
 
 
 def _forward(
-        inputs, model, model_method, batch_size=1000, lengths=None):
+        inputs, model, model_method, batch_size=1000, lengths=None,
+        wide_features=None):
     """ run model_method given inputs and model, used to process by batch if
         large number of inputs
     """
@@ -878,7 +919,11 @@ def _forward(
     for offset in range(0, len(inputs), batch_size):
         input_batch = inputs[offset:offset+batch_size].to(device)
         length_batch = lengths[offset:offset+batch_size].to(device)
-        prediction_batch = model_method(input_batch, length_batch)
+        wf_batch = None
+        if wide_features is not None and len(wide_features):
+            wf_batch = wide_features[offset:offset+batch_size].to(device)
+        prediction_batch = model_method(
+            input_batch, length_batch, wide_features=wf_batch)
         prediction_batch = prediction_batch.cpu().detach().numpy()
         predictions.extend(prediction_batch)
     if is_training:  # set back to training mode
@@ -886,15 +931,17 @@ def _forward(
     return torch.from_numpy(np.array(predictions))
 
 
-def predict(inputs, model, batch_size=1000, lengths=None):
+def predict(inputs, model, batch_size=1000, lengths=None, wide_features=None):
     return _forward(
-        inputs, model, model.predict, batch_size=batch_size, lengths=lengths)
+        inputs, model, model.predict, batch_size=batch_size, lengths=lengths,
+        wide_features=wide_features)
 
 
-def predict_proba(inputs, model, batch_size=1000, lengths=None):
+def predict_proba(
+        inputs, model, batch_size=1000, lengths=None, wide_features=None):
     return _forward(
         inputs, model, model.predict_proba, batch_size=batch_size,
-        lengths=lengths)
+        lengths=lengths, wide_features=wide_features)
 
 
 def early_stopping(scores, patience, min_improvement=0.):
@@ -1013,6 +1060,50 @@ def get_corrections() -> Dict[str, str]:
     return corrections
 
 
+def compute_wide_features(
+        data: pd.DataFrame, vocab: set, max_seq_len: int) -> np.ndarray:
+    wide_features_f = [
+        lambda r, l, t, vocab=vocab: len(set(t) - vocab),  # number of oov
+        lambda r, l, t: int(r[0].isupper()),  # start with uppercase
+        lambda r, l, t: sum(w.isupper() for w in r.split(' ')),  # number upper
+        lambda r, l, t: int('!!' in r),  # start with uppercase
+        lambda r, l, t: int(r[0].isupper()),  # start with uppercase
+    ]
+    sensitive_topics = [
+        'india', 'america', 'europe', 'africa', 'asia', 'south america',
+        'muslim', 'atheist', 'islam', 'christian', 'religio', 'hindu', 'allah',
+        'jesus',
+        'black', 'arab', 'aryan', 'race',
+        'vegan', 'vegetarian',
+        'homosexual', 'gay', 'lesbian', 'feminist', 'transgender',
+        'people', 'men', 'women', 'hate', 'why', 'girls', 'boys', 'child',
+        'trump', 'democrats', 'liberal', 'obama',
+        'job', 'good', 'think', 'feel', 'like', 'lol', 'money',
+        'penis', 'pussy', 'sex', 'dick', 'boobs', 'tits', 'rape'
+    ]
+    insults = [
+        'arse', 'ass',  'bitch', 'cock', 'fuck', 'fucker', 'suck', 'sucker',
+        'dick-head', 'dickhead', 'goon', 'junkie', 'loser', 'motherfucker',
+        'shit', 'slut', 'weirdo',
+    ]
+    topics = sensitive_topics + insults
+    for topic in topics:
+        wide_features_f.append(lambda r, l, t, topic=topic: int(topic in l))
+    bucket_size = int(max_seq_len/10)
+    for offset in range(0, max_seq_len, bucket_size):
+        s, e = offset, offset + bucket_size
+        wide_features_f.append(
+            lambda r, l, t, s=s, e=e: int(s <= len(t) < e))
+    wide_features = np.empty((len(data), len(wide_features_f)))
+    for index, row in data.iterrows():
+        raw, lowered = row['original_text'], row['original_text'].lower()
+        tokens = row['tokenized']
+        row_wide_features = np.array(
+            [f(raw, lowered, tokens) for f in wide_features_f])
+        wide_features[index] = row_wide_features
+    return wide_features
+
+
 def get_saved_best_params():
     best_params = {
         'batch_size': 512,
@@ -1052,6 +1143,7 @@ def get_saved_best_params():
         'embeddings_top_n': 0,
         'clip_grad_norm': 0.25,
         'tune_threshold': True,
+        'wide_features': True,
     }
     return best_params
 
@@ -1087,6 +1179,7 @@ def get_params_space():
         'train_ratio': 0.8,
         'num_folds': None,
         'tune_threshold': True,
+        'wide_features': True,
         'clf_model': 'RecurrentNN',
     }
     if PARAMS_SPACE['num_folds'] is not None:
@@ -1130,6 +1223,8 @@ def main(num_samples=0):
     train_data = downsample(
         train_data, PARAMS_SPACE['downsample'],
         PARAMS_SPACE['max_imbalance_ratio'])
+    train_data['original_text'] = train_data['question_text']
+    test_data['original_text'] = test_data['question_text']
     if PARAMS_SPACE['correct_text']:
         corrections = get_corrections()
         correct_text(train_data, corrections)
@@ -1145,6 +1240,10 @@ def main(num_samples=0):
         vocab_filter=train_vocab, oov_vocab=train_vocab,
         lower=PARAMS_SPACE['lower'], top_n=PARAMS_SPACE['embeddings_top_n'],
         agg_method=PARAMS_SPACE['emb_agg_method'])
+    train_wide_features = None
+    if PARAMS_SPACE['wide_features']:
+        train_wide_features = compute_wide_features(
+            train_data, set(vocab), PARAMS_SPACE['max_seq_len'])
     logger.info(f"Vocab size: {len(vocab)}")
     emb_size = weights.shape[1]
     num_classes = len(set(train_data['target']))
@@ -1156,24 +1255,30 @@ def main(num_samples=0):
         run_random_search(
             X_train, y_train, weights, PARAMS_SPACE, params_score,
             num_samples, PARAMS_SPACE['train_ratio'],
-            PARAMS_SPACE['num_folds'])
+            PARAMS_SPACE['num_folds'], wide_features=train_wide_features)
         best_params, score = get_best_params(params_score)
         model, scores = train_for_params(
             X_train, y_train, weights, best_params, best_params['train_ratio'],
-            best_params['num_folds'])
+            best_params['num_folds'], wide_features=train_wide_features)
         # analysis = run_eda(train_data, test_data)
     else:
         logger.info("final training")
         model, scores = train_for_params(
             X_train, y_train, weights, best_params, best_params['train_ratio'],
-            best_params['num_folds'])
+            best_params['num_folds'], wide_features=train_wide_features)
         logger.info("preprocess and predict target on test set")
         if PARAMS_SPACE['correct_text']:
             correct_text(test_data, corrections)
+        test_wide_features = None
+        if PARAMS_SPACE['wide_features']:
+            test_wide_features = compute_wide_features(
+                test_data, set(vocab), PARAMS_SPACE['max_seq_len'])
         X_test = map_to_input_space(
             test_data, vocab, PARAMS_SPACE['max_seq_len'])
         X_test = torch.from_numpy(X_test)
-        test_data['prediction'] = predict(X_test, model)
+        test_wide_features = torch.from_numpy(test_wide_features).float()
+        test_data['prediction'] = predict(
+            X_test, model, wide_features=test_wide_features)
         test_data[['qid', 'prediction']].to_csv('submission.csv', index=False)
 
 

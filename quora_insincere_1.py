@@ -975,6 +975,44 @@ def build_vocab(data, vocab_size=0):
     return vocab
 
 
+def correct_text(data: pd.DataFrame, corrections: Dict[str, str]) -> None:
+    corrected_text = []
+    for index, row in data.iterrows():
+        if index % 100000 == 0:
+            logger.debug(index)
+        corrected_text.append(_correct_text(row['question_text'], corrections))
+    data['question_text'] = corrected_text
+
+
+def _correct_text(text: str, corrections: Dict[str, str]) -> str:
+    for error, correction in corrections.items():
+        text = text.replace(error, correction)
+    return text
+
+
+def get_corrections() -> Dict[str, str]:
+    misspell_dict = {
+        'colour': 'color', 'centre': 'center', 'favourite': 'favorite',
+        'travelling': 'traveling', 'counselling': 'counseling',
+        'theatre': 'theater', 'cancelled': 'canceled', 'labour': 'labor',
+        'organisation': 'organization', 'wwii': 'world war 2',
+        'citicise': 'criticize', 'youtu ': 'youtube ', 'Qoura': 'Quora',
+        'sallary': 'salary', 'Whta': 'What', 'narcisist': 'narcissist',
+        'howdo': 'how do', 'whatare': 'what are', 'howcan': 'how can',
+        'howmuch': 'how much', 'howmany': 'how many', 'whydo': 'why do',
+        'doI': 'do I', 'theBest': 'the best', 'howdoes': 'how does',
+        'mastrubation': 'masturbation', 'mastrubate': 'masturbate',
+        "mastrubating": 'masturbating', 'pennis': 'penis',
+        'Etherium': 'Ethereum', 'narcissit': 'narcissist',
+        'bigdata': 'big data', '2k17': '2017', '2k18': '2018',
+        'qouta': 'quota', 'exboyfriend': 'ex boyfriend',
+        'airhostess': 'air hostess', "whst": 'what',
+        'watsapp': 'whatsapp', 'demonitisation': 'demonetization',
+        'demonitization': 'demonetization', 'demonetisation': 'demonetization'}
+    corrections = {**misspell_dict}
+    return corrections
+
+
 def get_saved_best_params():
     best_params = {
         'batch_size': 512,
@@ -993,6 +1031,7 @@ def get_saved_best_params():
         'learning_rate': 0.0008,
         'loss_weight': (1.0, 2.0),
         'lower': True,
+        'correct_text': True,
         'lemma': False,
         'max_imbalance_ratio': 0.0,
         'max_seq_len': 50,
@@ -1021,6 +1060,7 @@ def get_params_space():
     PARAMS_SPACE = {
         'seed': np.random.randint(1E9),
         'lower': True,
+        'correct_text': True,
         'lemma': False,
         'downsample': 1.,  # None, 0 or 1 to ignore
         'max_imbalance_ratio': 0.,
@@ -1090,6 +1130,9 @@ def main(num_samples=0):
     train_data = downsample(
         train_data, PARAMS_SPACE['downsample'],
         PARAMS_SPACE['max_imbalance_ratio'])
+    if PARAMS_SPACE['correct_text']:
+        corrections = get_corrections()
+        correct_text(train_data, corrections)
     nlp = spacy.load(
         PARAMS_SPACE['spacy_model'], disable=['tagger', 'parser', 'ner'])
     preprocess_data(
@@ -1125,6 +1168,8 @@ def main(num_samples=0):
             X_train, y_train, weights, best_params, best_params['train_ratio'],
             best_params['num_folds'])
         logger.info("preprocess and predict target on test set")
+        if PARAMS_SPACE['correct_text']:
+            correct_text(test_data, corrections)
         X_test = map_to_input_space(
             test_data, vocab, PARAMS_SPACE['max_seq_len'])
         X_test = torch.from_numpy(X_test)

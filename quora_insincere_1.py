@@ -296,11 +296,13 @@ class FeedForwardNN(nn.Module):
         super().__init__()
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.device = device
+        self.num_classes = num_classes
         self.weights = weights
         self.trainable_emb = trainable_emb
         self.padding_idx = padding_idx
         self.emb_agg = emb_agg
         self._init_embeddings()
+        self.set_threshold(None, 0)
         if hidden1:
             self.input1 = nn.Linear(input_size, hidden1)
             self.hidden1 = nn.Linear(hidden1, num_classes)
@@ -335,8 +337,22 @@ class FeedForwardNN(nn.Module):
 
     def predict(self, inputs, lengths=None):
         """ predict output class """
-        _, predictions = torch.max(self.forward(inputs, lengths), 1)
+        out = self.predict_proba(inputs, lengths)
+        probas, predictions = torch.max(out, 1)
+        if self.threshold is not None:
+            default_preds = torch.ones(len(predictions)) * self.default_class
+            default_preds = default_preds.long().to(self.device)
+            predictions = torch.where(
+                probas > self.threshold, predictions, default_preds)
         return predictions
+
+    def predict_proba(self, inputs, lengths=None):
+        """ predict proba per class """
+        return F.softmax(self.forward(inputs, lengths), dim=1)
+
+    def set_threshold(self, threshold, default_class=0):
+        self.threshold = threshold
+        self.default_class = default_class
 
     def reset_weights(self):
         """ reset model weights """
@@ -361,6 +377,7 @@ class RecurrentNN(nn.Module):
         super().__init__()
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.device = device
+        self.num_classes = num_classes
         self.input_size = input_size
         self.weights = weights
         self.trainable_emb = trainable_emb
@@ -376,6 +393,7 @@ class RecurrentNN(nn.Module):
             # concat maxpooling and avgpooling
             self.out_rnn_dim *= 2
         self._init_embeddings()
+        self.set_threshold(None, 0)
         if unit_type == 'LSTM':
             self.rnn = nn.LSTM(
                 self.input_size, self.hidden_dim_rnn, self.num_layers_rnn,
@@ -461,8 +479,22 @@ class RecurrentNN(nn.Module):
 
     def predict(self, inputs, lengths=None):
         """ predict output class """
-        _, predictions = torch.max(self.forward(inputs, lengths), 1)
+        out = self.predict_proba(inputs, lengths)
+        probas, predictions = torch.max(out, 1)
+        if self.threshold is not None:
+            default_preds = torch.ones(len(predictions)) * self.default_class
+            default_preds = default_preds.long().to(self.device)
+            predictions = torch.where(
+                probas > self.threshold, predictions, default_preds)
         return predictions
+
+    def predict_proba(self, inputs, lengths=None):
+        """ predict proba per class """
+        return F.softmax(self.forward(inputs, lengths), dim=1)
+
+    def set_threshold(self, threshold, default_class=0):
+        self.threshold = threshold
+        self.default_class = default_class
 
     def _init_hidden(self, batch_size):
         """ init hidden state
@@ -491,6 +523,10 @@ class AverageEnsemble(nn.Module):
     def __init__(self, models: List[nn.Module], padding_idx: int = 0) -> None:
         super().__init__()
         self.models = models
+        if not models:
+            raise ValueError("At least one model is needed for ensemble")
+        self.num_classes = models[0].num_classes
+        assert([model.num_classes == self.num_classes for model in models])
         self.padding_idx = padding_idx
 
     def forward(self, inputs, *args, **kwargs) -> torch.tensor:
@@ -618,7 +654,8 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
             params['num_epochs'], params['batch_size'],
             patience=params['patience'],
             min_improvement=params['min_improvement'],
-            clip_grad_norm=params.get('clip_grad_norm', .0))
+            clip_grad_norm=params.get('clip_grad_norm', .0),
+            tune_threshold=params['tune_threshold'])
         if params['ensemble_method'] == 'avg':
             model = AverageEnsemble(models)
         else:
@@ -634,14 +671,16 @@ def train_for_params(X, y, weights, params, train_ratio=0.8, num_folds=None):
             num_epochs=params['num_epochs'], batch_size=params['batch_size'],
             patience=params['patience'],
             min_improvement=params['min_improvement'],
-            clip_grad_norm=params.get('clip_grad_norm', .0))
+            clip_grad_norm=params.get('clip_grad_norm', .0),
+            tune_threshold=params['tune_threshold'])
     else:
         scores = train(
             X, X, y, y, model, criterion, optimizer,
             num_epochs=params['num_epochs'], batch_size=params['batch_size'],
             patience=params['patience'],
             min_improvement=params['min_improvement'],
-            clip_grad_norm=params.get('clip_grad_norm', .0))
+            clip_grad_norm=params.get('clip_grad_norm', .0),
+            tune_threshold=params['tune_threshold'])
     return model, scores
 
 
@@ -696,10 +735,32 @@ def build_optimizer_from_params(params, model):
     return optimizer
 
 
+def _tune_threshold(
+        model, X_test, y_test, X_test_len, metric='f1_score', step_size=.01):
+    """ return threshold that optimize y_test """
+    probas = predict_proba(
+        X_test, model, lengths=X_test_len)
+    pred_probas, predictions = torch.max(probas, dim=1)
+    best_default_class, best_threshold, best_score = 0, 0, 0
+    for default_class in range(model.num_classes):
+        default_preds = torch.ones(len(predictions), dtype=torch.long)
+        default_preds *= default_class
+        for threshold in np.arange(0, 1, step_size):
+            threshold_preds = torch.where(
+                pred_probas > threshold, predictions, default_preds)
+            score = compute_score(y_test, threshold_preds, metric=metric)
+            logger.info(f"p < {threshold} -> {default_class}: {score}")
+            if score > best_score:
+                best_default_class = default_class
+                best_threshold = threshold
+                best_score = score
+    return best_default_class, best_threshold, best_score
+
+
 def train_cv(
         X, y, model_factory, criterion_factory, optimizer_factory, num_epochs,
         batch_size, num_folds=5, metric='f1_score', patience=10,
-        min_improvement=0., clip_grad_norm=.0):
+        min_improvement=0., clip_grad_norm=.0, tune_threshold=False):
     """ train using cross-validation
         return (score per iteration per fold, list of trained models)
     """
@@ -715,7 +776,7 @@ def train_cv(
         fold_scores = train(
             X_train, X_test, y_train, y_test, model, criterion, optimizer,
             num_epochs, batch_size, metric, patience, min_improvement,
-            clip_grad_norm)
+            clip_grad_norm, tune_threshold)
         cv_scores.append(fold_scores)
         models.append(model)
     return cv_scores, models
@@ -724,7 +785,7 @@ def train_cv(
 def train(
         X_train, X_test, y_train, y_test, model, criterion, optimizer,
         num_epochs, batch_size, metric='f1_score', patience=10,
-        min_improvement=0., clip_grad_norm=0.):
+        min_improvement=0., clip_grad_norm=0., tune_threshold=False):
     """ train model
         return score per iteration
     """
@@ -734,7 +795,7 @@ def train(
     X_test_len = (X_test != model.padding_idx).sum(dim=1)
     scores = []
     iter = 0
-    best_model_sd = None
+    best_model_sd, best_epoch = None, 0
     model.reset_weights()
     model.train()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -766,6 +827,7 @@ def train(
         score = evaluate(X_test, y_test, model, metric, batch_size, X_test_len)
         if scores and score > max(scores):
             best_model_sd = copy.deepcopy(model.state_dict())
+            best_epoch = epoch
         scores.append(score)
         logger.info(f"EPOCH {epoch}: {metric} {score:.3f}")
         if early_stopping(scores, patience, min_improvement):
@@ -776,20 +838,33 @@ def train(
     if best_model_sd:
         model.load_state_dict(best_model_sd)
     model.eval()
+    if tune_threshold:
+        default_class, threshold, score = _tune_threshold(
+            model, X_test, y_test, X_test_len, wf_test=wf_test)
+        logger.info(
+            f"Set tuned threshold to proba < {threshold} -> {default_class} "
+            f"(score {score})")
+        model.set_threshold(threshold, default_class)
+        scores[best_epoch] = score
     return scores
 
 
 def evaluate(inputs, targets, model, metric, batch_size=1000, lengths=None):
     """ compute predictions for inputs and evaluate w.r.t to targets """
     predictions = predict(inputs, model, batch_size, lengths)
+    return compute_score(targets, predictions, metric)
+
+
+def compute_score(targets, predictions, metric='f1_score'):
     if metric == 'f1_score':
         return f1_score(targets, predictions)
     else:
         raise Exception(f"unknown metric {metric}")
 
 
-def predict(inputs, model, batch_size=1000, lengths=None):
-    """ predict classes given inputs and model, used to process by batch if
+def _forward(
+        inputs, model, model_method, batch_size=1000, lengths=None):
+    """ run model_method given inputs and model, used to process by batch if
         large number of inputs
     """
     if lengths is None:
@@ -802,11 +877,23 @@ def predict(inputs, model, batch_size=1000, lengths=None):
     for offset in range(0, len(inputs), batch_size):
         input_batch = inputs[offset:offset+batch_size].to(device)
         length_batch = lengths[offset:offset+batch_size].to(device)
-        prediction_batch = model.predict(input_batch, length_batch)
-        predictions.extend(prediction_batch.cpu().numpy())
+        prediction_batch = model_method(input_batch, length_batch)
+        prediction_batch = prediction_batch.cpu().detach().numpy()
+        predictions.extend(prediction_batch)
     if is_training:  # set back to training mode
         model.train()
-    return predictions
+    return torch.from_numpy(np.array(predictions))
+
+
+def predict(inputs, model, batch_size=1000, lengths=None):
+    return _forward(
+        inputs, model, model.predict, batch_size=batch_size, lengths=lengths)
+
+
+def predict_proba(inputs, model, batch_size=1000, lengths=None):
+    return _forward(
+        inputs, model, model.predict_proba, batch_size=batch_size,
+        lengths=lengths)
 
 
 def early_stopping(scores, patience, min_improvement=0.):
@@ -923,6 +1010,7 @@ def get_saved_best_params():
         'emb_agg_method': 'concat',
         'embeddings_top_n': 0,
         'clip_grad_norm': 0.25,
+        'tune_threshold': True,
     }
     return best_params
 
@@ -955,6 +1043,7 @@ def get_params_space():
         'trainable_emb': True,
         'train_ratio': 0.8,
         'num_folds': None,
+        'tune_threshold': True,
         'clf_model': 'RecurrentNN',
     }
     if PARAMS_SPACE['num_folds'] is not None:

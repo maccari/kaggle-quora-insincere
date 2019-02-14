@@ -68,7 +68,7 @@ class TestModels(unittest.TestCase):
         self.model = FeedForwardNN(
             self.emb_size, self.num_classes, self.weights, hidden1=100)
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.SGD(self.model.parameters(), lr=.001)
+        self.optimizer = optim.SGD(self.model.parameters(), lr=.01)
         scores = self._train()
         self.assertTrue(max(scores, default=0.) > .8)
 
@@ -128,7 +128,7 @@ class TestPipeline(unittest.TestCase):
             mock_params.return_value = best_params
             mock_params.return_value.update({
                 'downsample': .001,
-                'num_epochs': 20,
+                'num_epochs': 1,
                 'embeddings_top_n': 1000
             })
             main()

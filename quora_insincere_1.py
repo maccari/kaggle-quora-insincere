@@ -1106,42 +1106,40 @@ def compute_wide_features(
 
 def get_saved_best_params():
     best_params = {
-        'batch_size': 512,
+        'batch_size': 1024,
         'clf_model': 'RecurrentNN',
+        'clip_grad_norm': 0.25,
         'criterion': 'CrossEntropyLoss',
         'downsample': 1.0,
-        'dropout': 0.0,
+        'dropout': 0.4,
+        'emb_agg_method': 'concat',
         'embedding_models': (
             'glove.840B.300d/glove.840B.300d.txt',
             'paragram_300_sl999/paragram_300_sl999.txt',
-            'wiki-news-300d-1M/wiki-news-300d-1M.vec'
-        ),
-        'unit_type': 'GRU',
-        'hidden_dim_rnn': 200,
-        'hidden_linear1': 200,
-        'learning_rate': 0.0008,
-        'loss_weight': (1.0, 2.0),
-        'lower': True,
+            'wiki-news-300d-1M/wiki-news-300d-1M.vec'),
+        'embeddings_top_n': 0,
+        'hidden_dim_rnn': 150,
+        'hidden_linear1': 150,
+        'learning_rate': 0.001,
+        'loss_weight': None,
         'correct_text': True,
+        'lower': False,
         'lemma': False,
         'max_imbalance_ratio': 0.0,
         'max_seq_len': 50,
         'min_improvement': 0.01,
-        'momentum': 0.1,
-        'num_epochs': 200,
+        'momentum': 0.2,
+        'num_epochs': 5,
         'num_folds': None,
-        'ensemble_method': 'avg',
         'optimizer': 'Adam',
-        'patience': 3,
-        'seed': 75804538,
+        'patience': 10,
+        'seed': 828600365,
         'spacy_model': 'en_core_web_sm',
-        'train_ratio': 0.8,
+        'train_ratio': 0.,
         'trainable_emb': True,
+        'unit_type': 'LSTM',
+        'vocab_size': 100000,
         'weight_decay': 1e-06,
-        'vocab_size': 50000,
-        'emb_agg_method': 'concat',
-        'embeddings_top_n': 0,
-        'clip_grad_norm': 0.25,
         'tune_threshold': True,
         'wide_features': True,
     }
@@ -1151,8 +1149,8 @@ def get_saved_best_params():
 def get_params_space():
     PARAMS_SPACE = {
         'seed': np.random.randint(1E9),
-        'lower': True,
         'correct_text': True,
+        'lower': False,
         'lemma': False,
         'downsample': 1.,  # None, 0 or 1 to ignore
         'max_imbalance_ratio': 0.,
@@ -1162,21 +1160,21 @@ def get_params_space():
             'paragram_300_sl999/paragram_300_sl999.txt',
             'wiki-news-300d-1M/wiki-news-300d-1M.vec'
         ),
-        'vocab_size': 50000,
+        'vocab_size': 100000,
         'embeddings_top_n': 0,
         'emb_agg_method': 'concat',
         'spacy_model': 'en_core_web_sm',
         'batch_size': [2**i for i in range(8, 12)],
         'weight_decay': [10**i for i in range(-6, -4)],
         'momentum': np.arange(0., 0.91, 0.1).tolist(),
-        'num_epochs': 200,
-        'patience': 5,
+        'num_epochs': 5,
+        'patience': 10,
         'min_improvement': 1E-2,
         'criterion': "CrossEntropyLoss",
         'loss_weight': [None, (), (1., 2.)],  # () means balanced with classes
         'optimizer': ["SGD", "Adam"],
         'trainable_emb': True,
-        'train_ratio': 0.8,
+        'train_ratio': 0.,
         'num_folds': None,
         'tune_threshold': True,
         'wide_features': True,
@@ -1186,16 +1184,16 @@ def get_params_space():
         PARAMS_SPACE['ensemble_method'] = 'avg'
     if PARAMS_SPACE['clf_model'] == 'FeedForwardNN':
         PARAMS_SPACE.update({
-            'hidden_size_1': list(range(0, 201, 50)),
+            'hidden_size_1': [0, 32, 64, 128],
             'emb_agg': ['mean'],
             'learning_rate': [i*1E-4 for i in [1, 2, 5, 10]],
         })
     elif PARAMS_SPACE['clf_model'] == 'RecurrentNN':
         PARAMS_SPACE.update({
             'unit_type': ['LSTM', 'GRU'],
-            'hidden_dim_rnn': list(range(50, 201, 50)),
-            'hidden_linear1': list(range(50, 201, 50)),
-            'learning_rate': [i*1E-3 for i in [.8, 1., 2, 4]],
+            'hidden_dim_rnn': [32, 64, 128],
+            'hidden_linear1': [32, 64, 128],
+            'learning_rate': [i*1E-2 for i in [.5, 1, 2]],
             'dropout': np.arange(0., 0.51, 0.1).tolist(),
             'clip_grad_norm': [0., 0.25]
         })
